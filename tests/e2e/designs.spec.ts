@@ -27,6 +27,20 @@ async function currentData(page: Page, kind: string) {
     } finally { database.close(); }
   }, kind);
 }
+/** Pick an item from a "menu" <select> that stays on its placeholder (テンプレート / 保存した構成).
+ *  locator.selectOption() first sets .value and then dispatches input + change; against these
+ *  React-controlled selects, React's change tracking can miss that change under load (the menu
+ *  silently does nothing) or process it twice, so set the value and dispatch one change ourselves. */
+async function choose(page: Page, name: string, choice: string | { label: string }) {
+  await page.getByRole('combobox', { name, exact: true }).evaluate((node, choice) => {
+    const select = node as HTMLSelectElement;
+    const options = Array.from(select.options);
+    const option = typeof choice === 'string' ? options.find(o => o.value === choice) : options.find(o => o.text === choice.label);
+    if (!option) throw new Error(`選択肢が見つかりません: ${JSON.stringify(choice)}`);
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(select, option.value);
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }, choice);
+}
 
 for (const kind of ['network', 'aws'] as const) {
   test(`${kind}: deleting saved designs preserves the draft and handles cancellation and failure`, async ({ page }) => {
@@ -101,10 +115,10 @@ for (const kind of ['network', 'aws'] as const) {
       await page.locator('.aws-add').getByRole('button', { name: 'VPC', exact: true }).click();
     }
     await save(page, '保存した検証構成');
-    await page.getByRole('combobox', { name: 'テンプレート', exact: true }).selectOption(kind === 'network' ? 'routing' : 'three-tier');
+    await choose(page, 'テンプレート', kind === 'network' ? 'routing' : 'three-tier');
     await page.getByRole('button', { name: 'キャンセル', exact: true }).click();
     await expect(controls).toContainText('保存した検証構成');
-    await page.getByRole('combobox', { name: 'テンプレート', exact: true }).selectOption(kind === 'network' ? 'routing' : 'three-tier');
+    await choose(page, 'テンプレート', kind === 'network' ? 'routing' : 'three-tier');
     await page.getByRole('button', { name: '切り替える', exact: true }).click();
     if (kind === 'network') {
       await expect(page.locator('.device-node')).toHaveCount(4);
@@ -117,13 +131,13 @@ for (const kind of ['network', 'aws'] as const) {
     await save(page, 'テンプレートからの構成');
     await page.reload();
     await expect(controls).toContainText('テンプレートからの構成');
-    await page.getByRole('combobox', { name: '保存した構成', exact: true }).selectOption({ label: '保存した検証構成' });
+    await choose(page, '保存した構成', { label: '保存した検証構成' });
     await page.getByRole('button', { name: '切り替える', exact: true }).click();
     await expect(controls).toContainText('保存した検証構成');
     await expect.poll(async () => {
       const data = await currentData(page, kind); return kind === 'network' ? data?.devices.length : data?.vpcs.length;
     }).toBe(1);
-    await page.getByRole('combobox', { name: 'テンプレート', exact: true }).selectOption(kind === 'network' ? 'routing' : 'three-tier');
+    await choose(page, 'テンプレート', kind === 'network' ? 'routing' : 'three-tier');
     await page.getByRole('button', { name: '切り替える', exact: true }).click();
     await expect.poll(async () => {
       const data = await currentData(page, kind); return kind === 'network' ? data?.devices.length : data?.vpcs.length;
@@ -152,7 +166,7 @@ for (const kind of ['network', 'aws'] as const) {
 
 // Opening any template and pressing 分析 with the default selection must not end in an error.
 async function switchTemplate(page: Page, id: string) {
-  await page.getByRole('combobox', { name: 'テンプレート', exact: true }).selectOption(id);
+  await choose(page, 'テンプレート', id);
   await page.getByRole('button', { name: '切り替える', exact: true }).click();
 }
 async function expectDefaultAnalysisOk(page: Page, hasTarget: boolean) {
@@ -234,7 +248,7 @@ test('terraform: blank creation, templates, named snapshots and reload', async (
   await expect(tag).toHaveText('新規構成・編集中');
   await save(page, '保存したコード');
   await expect(tag).toHaveText('保存した構成');
-  await page.getByRole('combobox', { name: 'テンプレート', exact: true }).selectOption('starter');
+  await choose(page, 'テンプレート', 'starter');
   await page.getByRole('button', { name: '切り替える', exact: true }).click();
   await expect(controls).toContainText('VPCだけの最小構成');
   await expect(tag).toHaveText('テンプレート');
@@ -243,7 +257,7 @@ test('terraform: blank creation, templates, named snapshots and reload', async (
   await page.reload();
   await expect(controls).toContainText('VPCだけの最小構成');
   await expect(files).toHaveCount(3);
-  await page.getByRole('combobox', { name: '保存した構成', exact: true }).selectOption({ label: '保存したコード' });
+  await choose(page, '保存した構成', { label: '保存したコード' });
   await page.getByRole('button', { name: '切り替える', exact: true }).click();
   await expect(controls).toContainText('保存したコード');
   await expect.poll(savedFiles).toEqual(['main.tf', 'network.tf']);
