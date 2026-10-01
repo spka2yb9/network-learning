@@ -172,7 +172,9 @@ test('cables, device movement, link failure and recovery share the simulator sta
 test('JSON import validates before replacing configuration; unavailable IndexedDB stays usable', async ({ page }) => {
   await page.addInitScript(() => { Object.defineProperty(window, 'indexedDB', { get() { throw new Error('Storage disabled for test'); } }); });
   await page.goto('#/simulator');
-  await expect(page.getByRole('alert')).toContainText('保存データを読み込めません');
+  // Storage is disabled, so the app-wide notice and the design list's own error both render as
+  // role="alert"; target the global notice so the locator stays unambiguous.
+  await expect(page.locator('.global-notice')).toContainText('保存データを読み込めません');
   await page.locator('input[type=file]').setInputFiles({ name: 'broken.json', mimeType: 'application/json', buffer: Buffer.from('{"version":99}') });
   await expect(page.locator('.workspace > .error-text')).toContainText('未対応');
   await expect(page.locator('.device-node')).toHaveCount(4);
