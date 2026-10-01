@@ -17,6 +17,20 @@ async function toggleLink(page: Page, id: string) {
   await page.mouse.down(); await page.mouse.up(); await page.waitForTimeout(80);
   await page.mouse.down({ clickCount: 2 }); await page.mouse.up({ clickCount: 2 });
 }
+/** The UI marks completion optimistically; wait until it is persisted so a following reload can't race the write. */
+async function persistedProgress(page: Page, id: string) {
+  return page.evaluate(async id => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open('path-network-learning'); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error);
+    });
+    try {
+      return await new Promise<boolean>((resolve, reject) => {
+        const req = database.transaction('progress').objectStore('progress').get(id);
+        req.onsuccess = () => resolve(req.result?.completed === true); req.onerror = () => reject(req.error);
+      });
+    } finally { database.close(); }
+  }, id);
+}
 test('GUI vertical slice: fail, configure, recover, debug, capture, persist, break', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('#/lab/routing-01');
@@ -119,6 +133,7 @@ test('mobile reading, subnet calculation, quiz and mastery persistence', async (
   }
   await page.getByRole('button', { name: /判定する/ }).click();
   await expect(page.locator('.assessment .not-passed')).toHaveCount(0);
+  await expect.poll(() => persistedProgress(page, 'subnet-mastery')).toBe(true);
   await page.reload();
   await expect(page.locator('.page-heading .badge')).toContainText('実技完了');
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
