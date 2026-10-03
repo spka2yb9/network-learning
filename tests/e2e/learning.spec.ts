@@ -439,3 +439,37 @@ test('PC layout: a lab shows its brief beside a workspace that fits the window; 
   await expect(page).toHaveURL(/#\/labs$/);
   await expect(page.getByRole('navigation', { name: 'メインナビゲーション' })).toBeVisible();  // reading pages keep the sidebar
 });
+
+test('progress reset clears completions and quiz answers from storage but keeps the workspace', async ({ page }) => {
+  // Build up progress: a completed guided lab and a correct chapter quiz answer.
+  await page.goto('#/lab/routing-01');
+  await route(page, 'R1', '192.168.2.0/24', '10.0.0.2');
+  await route(page, 'R2', '192.168.1.0/24', '10.0.0.1');
+  await page.getByRole('button', { name: /到達度を確認/ }).click();
+  await expect(page.locator('.assessment')).toContainText('すべての到達条件');
+  await page.goto('#/learn/subnet');
+  await page.getByRole('tab', { name: /Quiz/ }).click();
+  await page.getByRole('radio', { name: /192.168.10.94/ }).check();
+  await page.getByRole('button', { name: '回答を確認', exact: true }).click();
+  await expect(page.locator('.quiz-feedback')).toContainText('正解です');
+  // The roadmap summarises the progress and offers the reset behind a confirmation.
+  await page.goto('#/roadmap');
+  const counts = page.locator('.progress-summary dd');
+  await expect(counts.nth(0)).toHaveText('1');  // completed labs
+  await expect(counts.nth(2)).toHaveText('1');  // quiz / diagnosis answers
+  await page.getByRole('button', { name: '進捗をリセット', exact: true }).click();
+  await expect(page.getByRole('heading', { name: /リセットしますか/ })).toBeVisible();
+  await page.getByRole('button', { name: 'リセットする', exact: true }).click();
+  await expect(page.locator('.progress-management [role="status"]')).toContainText('リセットしました');
+  // The clearing reaches IndexedDB, so it survives a reload.
+  await page.reload();
+  await expect(page.locator('.progress-summary dd').nth(0)).toHaveText('0');
+  await expect(page.locator('.progress-summary dd').nth(2)).toHaveText('0');
+  await page.goto('#/learn/subnet');
+  await page.getByRole('tab', { name: /Quiz/ }).click();
+  await expect(page.locator('.quiz-feedback')).toHaveCount(0);
+  // Progress only: the stored lab configuration is untouched and still passes.
+  await page.goto('#/lab/routing-01');
+  await page.getByRole('button', { name: /到達度を確認/ }).click();
+  await expect(page.locator('.assessment')).toContainText('すべての到達条件');
+});

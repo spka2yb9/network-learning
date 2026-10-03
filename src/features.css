@@ -174,6 +174,18 @@ ol.plain{list-style:decimal;padding-left:20px}
 .roadmap-list .done .roadmap-number{background:var(--ok);color:#fff}
 .professional{font-size:.9375rem}
 
+/* ---- learning progress reset (roadmap) ---- */
+.progress-management{margin-top:44px;border:1px solid var(--border);border-radius:10px;background:#fff;padding:24px 26px}
+.progress-management .section-heading{margin-bottom:10px}
+.progress-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:16px 0 20px;padding:0}
+.progress-summary>div{border:1px solid var(--border);border-radius:8px;background:#fbfdf7;padding:12px 14px}
+.progress-summary dt{font-size:.75rem;color:#5b6b61}
+.progress-summary dd{margin:6px 0 0;font-size:1.25rem;font-weight:500;color:#35553f}
+.progress-management-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.progress-management .success-text{margin:16px 0 0}
+.button.danger{background:#a43c35;border-color:#a43c35;color:#fff}
+.button.danger:hover{background:#8c3129;transform:translateY(-1px)}
+
 /* ---- simulator inspector pieces ---- */
 .prop-section{border-top:1px solid #eef2ec;padding:12px 14px;display:grid;gap:8px}
 .prop-section>summary,.prop-section>h4{font-size:.8125rem;font-weight:600;color:#4c6443;cursor:pointer}

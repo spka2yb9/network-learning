@@ -212,6 +212,23 @@ class LabController {
     this.observations = { ...this.observations, [label]: value }; useUI.getState().changed();
     if (this.storageReady) try { await db.settings.put({ id: `obs:${this.labId}`, value: JSON.stringify(this.observations) }); } catch { this.storageFailure(); }
   }
+  /**
+   * Erase learning progress: completed labs and mastery checks, quiz / diagnosis answers and recorded observations.
+   * Saved configurations, AWS / Terraform workspaces and the CLI history are kept. Returns what was removed.
+   */
+  async resetProgress() {
+    const removed = { completed: this.completed.size, quizzes: this.quizzes.size, observations: Object.keys(this.observations).length };
+    this.completed = new Set(); this.quizzes = new Map(); this.observations = {};
+    useUI.getState().changed();
+    if (this.storageReady) try {
+      await db.transaction('rw', db.progress, db.quizzes, db.settings, async () => {
+        await db.progress.clear();
+        await db.quizzes.clear();
+        await db.settings.where('id').startsWith('obs:').delete();
+      });
+    } catch { this.storageFailure(); }
+    return removed;
+  }
   /** Final-state grading on an isolated copy. Troubleshooting labs also require naming the cause. */
   assess() {
     const lab = this.lab;
