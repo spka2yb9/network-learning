@@ -455,7 +455,7 @@ test('progress reset clears completions and quiz answers from storage but keeps 
   // The roadmap summarises the progress and offers the reset behind a confirmation.
   await page.goto('#/roadmap');
   const counts = page.locator('.progress-summary dd');
-  await expect(counts.nth(0)).toHaveText('1');  // completed labs
+  await expect(counts.nth(0)).toHaveText(/^1 \/ \d+$/);  // completed labs
   await expect(counts.nth(2)).toHaveText('1');  // quiz / diagnosis answers
   await page.getByRole('button', { name: '進捗をリセット', exact: true }).click();
   await expect(page.getByRole('heading', { name: /リセットしますか/ })).toBeVisible();
@@ -463,7 +463,7 @@ test('progress reset clears completions and quiz answers from storage but keeps 
   await expect(page.locator('.progress-management [role="status"]')).toContainText('リセットしました');
   // The clearing reaches IndexedDB, so it survives a reload.
   await page.reload();
-  await expect(page.locator('.progress-summary dd').nth(0)).toHaveText('0');
+  await expect(page.locator('.progress-summary dd').nth(0)).toHaveText(/^0 \/ \d+$/);
   await expect(page.locator('.progress-summary dd').nth(2)).toHaveText('0');
   await page.goto('#/learn/subnet');
   await page.getByRole('tab', { name: /Quiz/ }).click();
