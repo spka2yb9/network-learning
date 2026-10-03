@@ -16,8 +16,10 @@ export const stpEnabled = (d: DeviceState) => switchingKinds.includes(d.kind) &&
 /**
  * Steady-state spanning tree (single instance, like 802.1D / MST instance 0).
  * BPDU exchange, timers and the listening/learning transition are not simulated.
+ * `logical` maps a cabled port to the port STP sees: a bundled LAG member → its port-channel (all members are one
+ * STP port whose cost follows the aggregate speed), an unbundled member → null (it carries nothing).
  */
-export function computeStp(devices: DeviceState[], links: Link[]): StpResult {
+export function computeStp(devices: DeviceState[], links: Link[], logical: (device: string, port: string) => string | null = (_, p) => p): StpResult {
   const byId = new Map(devices.map(d => [d.id, d]));
   const bridges = new Map<string, StpBridge>();
   const ports = new Map<string, StpPort>();
@@ -30,16 +32,28 @@ export function computeStp(devices: DeviceState[], links: Link[]): StpResult {
   type Edge = { a: string; pa: string; b: string; pb: string; costA: number; costB: number };
   const edges: Edge[] = [];
   for (const d of devices) if (stpEnabled(d)) bridges.set(d.id, { bridgeId: bridgeId(d), rootId: bridgeId(d), rootCost: 0, isRoot: true });
-  for (const l of links) {
-    const active = l.up && portUp(l.sourceDevice, l.sourceInterface) && portUp(l.targetDevice, l.targetInterface);
-    for (const [d, p] of [[l.sourceDevice, l.sourceInterface], [l.targetDevice, l.targetInterface]]) {
+  const ends = links.map(l => ({ l, a: logical(l.sourceDevice, l.sourceInterface), b: logical(l.targetDevice, l.targetInterface) }))
+    .filter((e): e is { l: Link; a: string; b: string } => e.a !== null && e.b !== null);
+  const active = (e: typeof ends[number]) => e.l.up && portUp(e.l.sourceDevice, e.a) && portUp(e.l.targetDevice, e.b);
+  // A port-channel's speed is the sum of its active members.
+  const speed = new Map<string, number>();
+  for (const e of ends) for (const [d, p] of [[e.l.sourceDevice, e.a], [e.l.targetDevice, e.b]]) {
+    const k = portKey(d, p);
+    speed.set(k, (speed.get(k) ?? 0) + (active(e) ? e.l.bandwidth : 0));
+  }
+  for (const e of ends) {
+    const on = active(e);
+    for (const [d, p] of [[e.l.sourceDevice, e.a], [e.l.targetDevice, e.b]]) {
       if (!isBridgePort(d, p)) continue;
+      const k = portKey(d, p);
+      if (ports.get(k)?.forwarding) continue; // another member of the same port-channel is already active
       const iface = byId.get(d)!.interfaces.find(i => i.id === p)!;
-      ports.set(portKey(d, p), { role: active ? 'designated' : 'disabled', forwarding: active, cost: iface.stpCost ?? defaultStpCost(l.bandwidth) });
+      ports.set(k, { role: on ? 'designated' : 'disabled', forwarding: on, cost: iface.stpCost ?? defaultStpCost(speed.get(k) || e.l.bandwidth) });
     }
-    if (active && isBridgePort(l.sourceDevice, l.sourceInterface) && isBridgePort(l.targetDevice, l.targetInterface)) {
-      edges.push({ a: l.sourceDevice, pa: l.sourceInterface, b: l.targetDevice, pb: l.targetInterface,
-        costA: ports.get(portKey(l.sourceDevice, l.sourceInterface))!.cost, costB: ports.get(portKey(l.targetDevice, l.targetInterface))!.cost });
+    if (on && isBridgePort(e.l.sourceDevice, e.a) && isBridgePort(e.l.targetDevice, e.b)
+      && !edges.some(x => (x.a === e.l.sourceDevice && x.pa === e.a && x.b === e.l.targetDevice && x.pb === e.b) || (x.b === e.l.sourceDevice && x.pb === e.a && x.a === e.l.targetDevice && x.pa === e.b))) {
+      edges.push({ a: e.l.sourceDevice, pa: e.a, b: e.l.targetDevice, pb: e.b,
+        costA: ports.get(portKey(e.l.sourceDevice, e.a))!.cost, costB: ports.get(portKey(e.l.targetDevice, e.b))!.cost });
     }
   }
   // Connected components of bridges; each component elects its own root.

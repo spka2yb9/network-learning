@@ -7,6 +7,7 @@ import { starterFiles } from '../../terraform/examples';
 import { bgpScenario, dnsScenario, vpnScenario } from '../../simulator/scenarios/chapters';
 import { faults } from './LinuxVisual';
 import { breaks, edits } from './CloudVisuals';
+import { analyzeDesign, ecmpRun, lagRun, redundancyDesigns } from './RedundancyVisuals';
 
 // The chapter visuals make specific claims ("breaking X stops at layer Y"); keep them true.
 it('Linux ladder demo: each fault stops at its layer', () => {
@@ -53,3 +54,38 @@ it('BGP demo: LOCAL_PREF and link failure move the best path to R3', () => {
   expect(best(true, true)).toBe('10.0.13.2');
   expect(best(false, false)).toBe('10.0.13.2');
 });
+it('ECMP demo: flows spread over R2 and R3; a remote failure loses some flows with static routes but none with OSPF', () => {
+  const ok = ecmpRun('static', 'none');
+  expect(new Set(ok.t.streams.map(ok.path))).toEqual(new Set(['R2', 'R3']));
+  expect(ok.routes).toHaveLength(2);
+  expect(new Set(ecmpRun('single', 'none').t.streams.map(s => ecmpRun('single', 'none').path(s)))).toEqual(new Set(['R2']));
+  const remote = ecmpRun('static', 'R2-R4');
+  expect(remote.t.streams.some(s => !s.ok) && remote.t.streams.some(s => s.ok)).toBe(true);
+  expect(remote.t.streams.filter(s => !s.ok).every(s => remote.path(s) === 'R2')).toBe(true);
+  expect(ecmpRun('ospf', 'R2-R4').t.success).toBe(true);
+  expect(ecmpRun('static', 'R1-R2').routes.map(r => r.nextHop)).toEqual(['10.0.13.3']);
+});
+it('LAG demo: two members double the aggregate, not a single flow; a failed member halves it; static vs LACP never bundles', () => {
+  const both = lagRun([true, true], 'passive', 'src-dst-mixed-ip-port');
+  expect(both.status.capacity).toBe(2000);
+  expect(new Set(both.t.streams.map(both.member))).toEqual(new Set(['g0/7', 'g0/8']));
+  expect(both.t.total).toBe(2000);
+  expect(Math.max(...both.t.streams.map(s => s.rate))).toBeLessThanOrEqual(1000);
+  const one = lagRun([false, true], 'passive', 'src-dst-mixed-ip-port');
+  expect(one.status).toMatchObject({ up: true, capacity: 1000 });
+  expect(one.t.success).toBe(true);
+  expect(lagRun([true, true], 'on', 'src-dst-mixed-ip-port').status.up).toBe(false);
+  expect(lagRun([true, true], 'none', 'src-dst-mixed-ip-port').t.success).toBe(false);
+  const mac = lagRun([true, true], 'passive', 'src-dst-mac');
+  expect(new Set(mac.t.streams.filter(s => s.from === 'PC1').map(mac.member)).size).toBe(1);
+});
+it('Redundancy demo: SPOFs and capacity per design', () => {
+  const by = Object.fromEntries(redundancyDesigns.map(d => [d.id, analyzeDesign(d.options)]));
+  expect(by.single.spof).toEqual(expect.arrayContaining(['SW1–SW2（1本目）', 'R1–R2', 'R2–R4', 'R2']));
+  expect(by.loop.storm).toBe(true);
+  expect(by.stp.spof).not.toContain('SW1–SW2（1本目）');
+  expect(by.stp.capacity).toBe(1000);
+  expect(by.lag.capacity).toBe(2000);
+  expect(by.static.spof).toContain('R2–R4');
+  expect(by.ospf.spof.sort()).toEqual(['R1', 'R4', 'SW1', 'SW2', 'SW2–R1'].sort());
+}, 20_000);

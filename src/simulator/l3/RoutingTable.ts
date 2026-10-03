@@ -1,5 +1,6 @@
-import { forwardingKinds, type DeviceState, type NetworkInterface, type Route } from '../core/types';
-import { cidr, contains, dotted } from './ipv4';
+import { forwardingKinds, type DeviceState, type NetworkInterface, type PathChoice, type Route } from '../core/types';
+import { flowHash, flowText, type FlowKey } from '../core/flow';
+import { cidr, contains, dotted, ipv4 } from './ipv4';
 
 /** Interface usable for L3: administratively up, addressed, and (for tunnels) the SA is up. */
 export function l3Up(device: DeviceState, iface: NetworkInterface) {
@@ -25,17 +26,18 @@ export function longestPrefixMatch(routes: Route[], destination: string) { retur
 /**
  * Egress for one route: its interface (on-link check), or recursive lookup of its next hop.
  * A next hop that does not resolve makes the route unusable, so lookups fall back to the next candidate.
+ * `seen` spans the whole lookup: a recursive route is expanded once (a revisit is a loop or an already-failed branch).
  */
-function egress(device: DeviceState, table: Route[], route: Route, nextHop: string, path: Route[] = []): { iface: NetworkInterface; nextHop: string } | undefined {
-  if (path.includes(route) || path.length > 8) return undefined;
+function egress(device: DeviceState, table: Route[], route: Route, nextHop: string, seen = new Set<Route>()): { iface: NetworkInterface; nextHop: string } | undefined {
   if (route.nextHop) nextHop = route.nextHop;
   if (route.interfaceId) {
     const iface = device.interfaces.find(i => i.id === route.interfaceId && l3Up(device, i));
-    // On-link check. Tunnels are point-to-point: any next hop is reachable through them.
-    return iface && (iface.kind === 'tunnel' || contains(iface.address!, nextHop)) ? { iface, nextHop } : undefined;
+    // On-link check for a next hop. Interface-only routes ARP the destination itself; tunnels are point-to-point.
+    return iface && (iface.kind === 'tunnel' || !route.nextHop || contains(iface.address!, nextHop)) ? { iface, nextHop } : undefined;
   }
-  if (!route.nextHop) return undefined;
-  for (const r of ranked(table, nextHop)) { const e = egress(device, table, r, nextHop, [...path, route]); if (e) return e; }
+  if (!route.nextHop || seen.has(route)) return undefined;
+  seen.add(route);
+  for (const r of ranked(table, nextHop)) { const e = egress(device, table, r, nextHop, seen); if (e) return e; }
   return undefined;
 }
 /** Routes that win route selection per prefix (lowest preference, then metric) among usable ones — what `show ip route` lists. */
@@ -46,8 +48,31 @@ export function installedRoutes(device: DeviceState) {
   return all.filter(r => !all.some(o => o !== r && o.destination === r.destination && (o.preference < r.preference || (o.preference === r.preference && o.metric < r.metric))));
 }
 
-export function resolveRoute(device: DeviceState, destination: string, options: { dynamic?: boolean } = {}) {
+type Path = { route: Route; iface: NetworkInterface; nextHop: string };
+/**
+ * Route selection with ECMP: the best usable route plus every other usable route with the same prefix, AD and
+ * metric. Paths are ordered by next hop; with a `flow`, its hash picks one (per-flow load balancing: the same
+ * 5-tuple always takes the same path). Without a flow the first path is returned.
+ */
+export function resolveRoute(device: DeviceState, destination: string, options: { dynamic?: boolean; flow?: FlowKey } = {}): (Path & { ecmp?: { paths: Path[]; choice: PathChoice } }) | undefined {
   const table = routingTable(device, options);
-  for (const route of ranked(table, destination)) { const e = egress(device, table, route, destination); if (e) return { route, ...e }; }
+  const list = ranked(table, destination);
+  for (let i = 0; i < list.length; i++) {
+    const first = egress(device, table, list[i], destination);
+    if (!first) continue;
+    const best = list[i];
+    const paths: Path[] = [{ route: best, ...first }];
+    for (const r of list.slice(i + 1)) {
+      if (r.destination !== best.destination || r.preference !== best.preference || r.metric !== best.metric) break;
+      const e = egress(device, table, r, destination);
+      if (e && !paths.some(p => p.nextHop === e.nextHop && p.iface.id === e.iface.id)) paths.push({ route: r, ...e });
+    }
+    paths.sort((a, b) => ipv4(a.nextHop) - ipv4(b.nextHop) || a.iface.id.localeCompare(b.iface.id));
+    if (paths.length === 1) return paths[0];
+    const input = options.flow ? flowText(options.flow) : '';
+    const hash = input ? flowHash(input) : 0;
+    const chosen = hash % paths.length;
+    return { ...paths[chosen], ecmp: { paths, choice: { kind: 'ecmp', candidates: paths.map(p => `via ${p.nextHop}（${p.iface.id}）`), chosen, input, hash } } };
+  }
   return undefined;
 }

@@ -12,8 +12,8 @@ export interface Chapter {
   minutes: number;
   playground: { text: string; to: string; label: string };
   quiz: QuizQuestion[];
-  /** 'form' chapters use the built-in observation / calculation checks; others a mastery lab. */
-  mastery: { type: 'lab'; labId: string } | { type: 'form' };
+  /** 'form' chapters use the built-in observation / calculation checks; others need every listed mastery lab. */
+  mastery: { type: 'lab'; labIds: string[] } | { type: 'form' };
 }
 
 export const curriculum: Chapter[] = [
@@ -37,29 +37,36 @@ export const curriculum: Chapter[] = [
       { question: 'IPv6の説明として正しいものはどれですか？', options: ['ブロードキャストで相手のMACアドレスを調べる', 'LANのサブネットは原則 /64 にする', 'ルータが大きすぎるパケットを分割する', 'アドレスの長さは64ビット'], answer: 1, explanation: 'IPv6のLANは原則 /64 で、後半64ビットがインターフェースID（ホスト部にあたる部分）です。アドレス全体は128ビットなので、「64ビット」は誤りです。ブロードキャストはなくNDP（近隣探索）を使い、パケットの分割も送信元だけが行います。' },
       { question: 'VLSM（用途ごとに違う大きさで切り分ける方法）で、192.168.10.0/24 を部署ごとに分けます。隙間や重なりを作りにくい割り当ての順番はどれですか？', options: ['小さいサブネットから順に', '大きいサブネットから順に', '部署名の五十音順', 'どの順番でも結果は同じ'], answer: 1, explanation: '各ブロックは、自分のサイズの倍数の位置からしか始められません。大きい順に置けば、前のブロックの終わりが次の境目に必ずそろいます。小さい順に置くと境目がずれ、隙間や重なりが生まれやすくなります。' },
     ] },
-  { id: 'routing', dir: '03-routing', title: 'ルーティング', subtitle: '経路表で次の行き先を決める', level: 'FOUNDATION', available: true, minutes: 60, goal: '経路表を読んで、パケットが次にどのルータへ渡され、どこで止まったかを説明できる。',
-    playground: { text: 'OSPF（ルータどうしが経路を自動で交換する仕組み）で4台のルータをつないだ構成を開きます。ケーブルをダブルクリックしてリンクを切り、「show ip route」で経路が迂回路に切り替わる様子を確かめましょう。', to: '/simulator?template=ospf', label: 'OSPFテンプレートを開く' },
-    mastery: { type: 'lab', labId: 'routing-01' },
+  { id: 'routing', dir: '03-routing', title: 'ルーティング', subtitle: '経路表で次の行き先を決める', level: 'FOUNDATION', available: true, minutes: 75, goal: '経路表を読んで、パケットが次にどのルータへ渡され、どこで止まったかを説明できる。同じ宛先に複数のNext Hopがある意味（ECMP）と、経路が壊れたときの変化も説明できる。',
+    playground: { text: 'OSPF（ルータどうしが経路を自動で交換する仕組み）で4台のルータをつないだ構成を開きます。R1で「show ip route」を実行すると、PC3側のLANへの経路が2行（等コストの2経路＝ECMP）あるはずです。ケーブルをダブルクリックしてリンクを切り、経路が残りの1本に切り替わる様子を確かめましょう。テンプレートの「ECMP」も試せます。', to: '/simulator?template=ospf', label: 'OSPFテンプレートを開く' },
+    mastery: { type: 'lab', labIds: ['routing-01', 'ecmp-mastery'] },
     quiz: [
       { question: 'PC1 – R1 – R2 – PC2 の構成で、R1だけにPC2側（192.168.2.0/24）への経路を追加しました。Echo RequestはPC2に届くのに、pingは失敗します。原因はどれですか？', options: ['TCPの3-way handshakeが終わっていない', 'R2に、PC1側（192.168.1.0/24）へ戻る経路がない', 'PC1が、PC2のMACアドレスをARPで調べていない'], answer: 1, explanation: 'pingは、Echo Replyが送信元に戻って初めて成功します。R2は192.168.1.0/24を知らないので、PC2からのReplyを捨ててしまいます。PC1がARPで調べるのは同じリンクにいるR1だけで、PC2のMACアドレスは必要ありません（pingはTCPも使いません）。' },
       { question: 'ルータの経路表に 0.0.0.0/0、10.0.0.0/8、10.1.0.0/16、10.1.2.0/24 の4つの経路があります。宛先 10.1.2.3 のパケットに使われる経路はどれですか？', options: ['0.0.0.0/0', '10.0.0.0/8', '10.1.0.0/16', '10.1.2.0/24'], answer: 3, explanation: '4つとも宛先に一致しますが、ルータは最も長く一致する経路を選びます（Longest Prefix Match）。/24が最も範囲が狭く具体的なので、10.1.2.0/24が使われます。0.0.0.0/0は、ほかに一致する経路がないときだけ使われます。' },
       { question: 'ルータが 192.168.2.0/24 への経路を、Static Route（AD 1）とOSPF（AD 110）の両方で知っています。プレフィックス長は同じです。使われるのはどちらですか？', options: ['Static Route', 'OSPFの経路', '両方を使って負荷分散する', 'Metricが小さいほう'], answer: 0, explanation: 'プレフィックス長が同じなら、次にAD（Administrative Distance：情報源の信頼度）を比べ、小さいほうを使います。StaticのAD 1はOSPFの110より小さいので、Staticが選ばれます。Metricは同じプロトコルの経路どうしで比べる値で、StaticとOSPFの間では比べません。' },
       { question: '2台のルータでOSPFを設定しましたが、「show ip ospf neighbor」に相手が表示されず、経路も交換されません。原因として考えられるものはどれですか？', options: ['インターフェースのエリア番号が相手と違う', 'Router IDの値が大きい', 'リンクのコスト（Metric）が大きい', '経路表の行数が多い'], answer: 0, explanation: 'OSPFのルータは、同じリンクの相手とHelloを交換して隣接（Neighbor）になります。エリア番号やサブネットが一致しないと隣接にならず、経路も交換されません。コストが大きいとその経路が選ばれにくくなるだけで、隣接はできます。' },
       { question: '2台のルータが互いにDefault Routeを向け合い、ルーティングループが起きました。それでもパケットが永遠に回り続けないのはなぜですか？', options: ['ルータが自動で経路を直すから', 'TTLが転送のたびに1減り、0になったところで捨てられるから', 'スイッチがループを止めるから', 'ARPが失敗するから'], answer: 1, explanation: 'ルータは転送のたびにTTLを1減らし、0になったパケットを捨てて、送信元にICMPのTime Exceededを返します。ループ自体は自動では直らないので、経路の設定は人が直します。tracerouteで同じルータが交互に表示されたら、ループを疑います。' },
+      { question: 'R1の経路表に、10.20.0.0/24 が [1/0] via 10.0.12.2 と [1/0] via 10.0.13.3 の2行あります。R1はこの宛先のパケットをどう送りますか？', options: ['いつも上の行（10.0.12.2）だけを使う', 'パケットのフロー（送信元/宛先IP・プロトコル・ポート）ごとに、どちらか一方を使う', '同じパケットを両方へ複製して送る', 'パケットを1つずつ交互に送る'], answer: 1, explanation: '同じ宛先・同じAD・同じメトリックの経路が複数あると、ルータはそれらを同時に使います（ECMP）。多くの機器は、フローを表す値のハッシュで1つを選ぶので、同じフローはいつも同じ経路を通ります。パケットごとに交互に送る方式（per-packet）は、到着順が入れ替わりTCPの性能を落とすため、通常は使いません。' },
+      { question: '1 Gbpsの経路が2本あり、ECMPで使っています。1本のTCP接続（1つのフロー）で出せる速さの上限はどれですか？', options: ['1 Gbps', '2 Gbps', '0.5 Gbps'], answer: 0, explanation: 'ECMPはフロー単位で経路を選ぶので、1つのフローはどちらか1本の経路だけを通ります。上限はその経路の速さ（1 Gbps）です。2本の合計（2 Gbps）を使えるのは、複数のフローが2つの経路に分かれたときです。' },
+      { question: '静的ルートでECMPを組んだ R1 から見て、2つ先のリンク（R2–R4）が切れました。R1–R2 のリンクは正常です。何が起きやすいですか？', options: ['R1が自動で R3 経由だけを使う', 'R1は R2 経由を候補に残したままで、ハッシュで R2 経由を選んだフローだけが失敗する', 'R1を通るすべての通信が止まる'], answer: 1, explanation: '静的ルートは、Next Hop（隣のR2）に届くかどうかしか見ません。離れた区間の障害はR1にはわからないので、R2経由の経路が候補に残り、一部のフローだけが失敗する分かりにくい症状になります。OSPFのような動的ルーティングなら、障害が伝わって経路が消えます。' },
     ] },
-  { id: 'ethernet-vlan', dir: '04-ethernet-vlan', title: 'Ethernet / VLAN', subtitle: 'スイッチとVLANでLANを分ける', level: 'CORE NETWORKING', available: true, minutes: 60, goal: 'スイッチがフレームをどのポートへ出すかを、MACアドレステーブルとVLANから説明できる。',
+  { id: 'ethernet-vlan', dir: '04-ethernet-vlan', title: 'Ethernet / VLAN', subtitle: 'スイッチとVLANでLANを分ける', level: 'CORE NETWORKING', available: true, minutes: 80, goal: 'スイッチがフレームをどのポートへ出すかを、MACアドレステーブルとVLANから説明できる。リンク速度と、LACPで束ねた論理リンクの容量・障害時の挙動も説明できる。',
     playground: { text: '2台のスイッチをトランク（複数のVLANを運ぶリンク）でつなぎ、1台のルータでVLAN間をつなぐ構成（Router on a Stick）を開きます。pingの後にスイッチで「show mac address-table」や「show vlan brief」を実行し、どのVLANのどのポートで学習されたかを確かめましょう。', to: '/simulator?template=vlan', label: 'VLANテンプレートを開く' },
-    mastery: { type: 'lab', labId: 'vlan-02' },
+    mastery: { type: 'lab', labIds: ['vlan-02', 'lag-mastery'] },
     quiz: [
       { question: 'スイッチのg0/1に、PC1からフレームが届きました。スイッチがMACアドレステーブルに記録（学習）するのはどれですか？', options: ['宛先MACアドレスと受信ポート', '送信元MACアドレスと受信ポート', '宛先IPアドレスと送信ポート', '送信元IPアドレスと受信ポート'], answer: 1, explanation: 'スイッチは、機器がどのポートの先にいるかを、その機器が送ってきたフレームからしか知ることができません。そのため、送信元MACアドレスを受信ポート（とVLAN）に結び付けて記録します。宛先MACアドレスは、記録済みのテーブルを引いて転送先を決めるときに使います。' },
       { question: 'スイッチが受け取ったフレームの宛先MACアドレスが、MACアドレステーブルにまだありません。スイッチはこのフレームをどうしますか？', options: ['破棄する', '同じVLANの、受信ポート以外のすべてのポートへ送る（フラッディング）', 'ルータへ送る', 'ARPで宛先を問い合わせる'], answer: 1, explanation: '宛先がどのポートの先にいるかわからないので、同じVLANの受信ポート以外のすべてのポートへ送ります。これをフラッディングと呼びます。フレームを転送するためにスイッチがARPを送ることはありません。ARPは、IPアドレスからMACアドレスを調べたいPCやルータが送るものです。' },
       { question: 'PC-A（192.168.10.11/24）をVLAN 10のアクセスポートに、PC-B（192.168.10.12/24）をVLAN 20のアクセスポートにつなぎました。IPアドレスは同じサブネットです。PC-AからPC-Bへpingするとどうなりますか？', options: ['通信できる', 'ARPが届かず、通信できない', 'ルータが自動で転送して、通信できる', 'IPアドレスが自動で変わる'], answer: 1, explanation: 'VLANが違うとブロードキャストドメインが分かれるので、PC-AのARP Request（ブロードキャスト）はPC-Bに届きません。PC-BのMACアドレスがわからず、フレームを送れません。PC-Aは同じサブネットの相手には直接送ろうとするので、ルータにも渡しません。' },
       { question: 'スイッチどうしをつなぐトランクポートで、802.1Qタグを付けずに送受信されるのはどのVLANのフレームですか？', options: ['VLAN 1だけ', 'ネイティブVLAN', 'すべてのVLAN', '許可リストにないVLAN'], answer: 1, explanation: 'トランク上でタグを付けずに運ぶのは、ネイティブVLANのフレームです。Cisco機器の既定はVLAN 1ですが、設定で変えられるので「VLAN 1だけ」とは限りません。両端でネイティブVLANが違うと、相手側では別のVLANとして受け取られ、VLAN間でフレームが漏れます。' },
       { question: 'スイッチ3台を三角形につなぐと、STP（Spanning Tree Protocol）が一部のポートの転送を止めます。その目的はどれですか？', options: ['帯域を節約するため', 'L2のループで起きるブロードキャストストームを防ぐため', 'VLANを分けるため', 'MACアドレスの学習を止めるため'], answer: 1, explanation: 'EthernetフレームにはTTLがないので、ループがあるとブロードキャストが複製され続けます（ブロードキャストストーム）。STPは一部のポートの転送を止めて、ループのない木の形にします。LANを分けるのはVLANの役割で、STPの役割ではありません。' },
+      { question: '10 Gbpsのリンク2本をLACPで束ねたLAG（合計20 Gbps）があります。1本のTCP接続で出せる速さは、ふつうどこまでですか？', options: ['10 Gbps（メンバー1本分）まで', '20 Gbps', '5 Gbps'], answer: 0, explanation: 'LAGは、フレームの値（MAC・IP・ポートなど）のハッシュでフローごとにメンバーを選びます。1つのフローはメンバー1本だけを通るので、上限はメンバー1本分です。20 Gbps（aggregate bandwidth）は、多数のフローが2本に分かれたときの合計です。' },
+      { question: 'メンバー2本のLAGで、ケーブルが1本切れました。どうなりますか？', options: ['論理リンクはUpのまま。使える帯域が減り、通信は残りのメンバーへ移る', '論理リンクがDownし、通信が止まる', 'STPが計算し直すまで、しばらく通信が止まる'], answer: 0, explanation: 'メンバーが1本でも残っていれば、論理リンク（Port-channel）はUpのままです。STPから見たポートも変わらないので、STPの再計算は起きません。ただし使える帯域は減ります。全メンバーがDownすると、論理リンクもDownします。' },
+      { question: 'SW1のメンバーは channel-group 1 mode active、対向のSW2は mode passive です。束ねられますか？', options: ['束ねられる（active側がLACPDUを送り始め、passive側が応える）', '束ねられない（両方 active でないといけない）', 'passive の側だけが束ねる'], answer: 0, explanation: 'LACPでは、activeは自分からLACPDUを送り、passiveは受け取ったときだけ応えます。少なくとも片側が active なら束ねられます。passive 同士はどちらも送り始めないので、束ねられません。' },
+      { question: 'PC –10G– SW1 –1G– SW2 –10G– サーバー の経路で、PCからサーバーへの1本の転送の上限はどれですか？', options: ['1 Gbps', '10 Gbps', '21 Gbps'], answer: 0, explanation: '1つのフローの速さは、通る道のうち最も遅いリンク（ボトルネック）で決まります。両端が10 Gbpsでも、途中の1 Gbpsを超えることはできません。速度は足し算ではありません。' },
     ] },
   { id: 'dns', dir: '05-dns', title: 'DNSと名前解決', subtitle: '名前からIPアドレスを調べる', level: 'CORE NETWORKING', available: true, minutes: 50, goal: '名前解決で「誰が誰に問い合わせるか」と、キャッシュ（TTL）のせいで変更の反映が遅れる理由を説明できる。',
     playground: { text: 'Rootサーバー・TLDサーバー・権威DNSサーバー・再帰リゾルバがそろった構成を開きます。PC1で「dig」→「sleep 60」→「dig」の順に実行してTTLが減るのを確かめたり、「dig +trace www.example.com」で委任をたどったりしましょう。', to: '/simulator?template=dns', label: 'DNSテンプレートを開く' },
-    mastery: { type: 'lab', labId: 'dns-02' },
+    mastery: { type: 'lab', labIds: ['dns-02'] },
     quiz: [
       { question: 'LinuxのPCでは、名前解決の問い合わせ先を /etc/resolv.conf に書きます。ここに書くのは、どの役割のDNSサーバーですか？', options: ['Rootサーバー', '再帰リゾルバ（フルサービスリゾルバ）', '権威DNSサーバー', 'TLDサーバー'], answer: 1, explanation: 'PCの中のスタブリゾルバは自分では聞いて回らず、再帰リゾルバに「答えだけください」と1回頼みます。Root → TLD → 権威サーバーと順に聞いて回るのは、再帰リゾルバの仕事です。Rootサーバーは次に聞く相手を案内するだけで、PCの代わりに最後まで調べてはくれません。' },
       { question: '再帰リゾルバが www.example.com を調べる途中で、comのTLDサーバーに問い合わせました。TLDサーバーが返すのはどれですか？', options: ['www.example.com のAレコード', 'example.com を担当する権威サーバーのNSレコード（とglue）', 'SOAレコードだけ', 'エラー'], answer: 1, explanation: 'TLDサーバーは、www.example.com の答えそのものは持っていません。「example.com は ns1.example.com に聞いて」という案内（委任の応答）として、NSレコードとglue（そのサーバーのアドレス）を返します。Aレコードを返すのは、example.com の権威サーバーです。' },
@@ -69,7 +76,7 @@ export const curriculum: Chapter[] = [
     ] },
   { id: 'nat-firewall', dir: '06-nat-firewall', title: 'NAT / Firewall', subtitle: 'アドレスを書き換え、通信を選んで通す', level: 'CORE NETWORKING', available: true, minutes: 60, goal: 'NATテーブルとファイアウォールのルールを読んで、パケットが書き換えられるか・通るかを説明できる。',
     playground: { text: 'PAT（多数のPCで1つのグローバルアドレスを共有するNAT）、ポートフォワード、ステートフルFirewallを設定済みの構成を開きます。通信の後にFWで「show ip nat translations」「show firewall」「show conntrack」を実行し、変換の記録とルールの判定を確かめましょう。', to: '/simulator?template=firewall', label: 'Firewall / DMZ テンプレートを開く' },
-    mastery: { type: 'lab', labId: 'fw-01' },
+    mastery: { type: 'lab', labIds: ['fw-01'] },
     quiz: [
       { question: '社内のPC1（192.168.1.10）とPC2（192.168.1.11）が、PATで同じグローバルアドレス 203.0.113.2 を共有してインターネットに出ています。戻ってきたパケットがどちら宛てかを、ルータはどう区別しますか？', options: ['MACアドレスで区別する', 'ポート番号を変換・記録しておき、それで区別する', 'TTLで区別する', 'DNSで区別する'], answer: 1, explanation: '戻りのパケットはどれも宛先が 203.0.113.2 なので、IPアドレスだけではどちら宛てか区別できません。PATは送信元ポートを必要に応じて別の番号に書き換え、その対応をNATテーブルに記録します。戻りの宛先ポートでテーブルを引き、元のPCのアドレスとポートに戻します。' },
       { question: 'ステートフルFirewallで、社内PCからDMZのWebサーバー（443番）へ接続を始める通信だけを許可しました。戻り用のルールはありませんが、サーバーからのSYN-ACKは通ります。なぜですか？', options: ['戻りのパケットは、常にどれかの許可ルールに一致するから', '許可した接続を接続追跡（conntrack）に記録し、その応答だと判断するから', 'TTLが小さいから', 'NATがあるから'], answer: 1, explanation: 'ステートフルFirewallは、許可した通信を接続追跡のテーブルに記録します。SYN-ACKはその記録に一致するので、戻り用のルールがなくても通ります。ステートレスなフィルタには記録がないので、戻りを許可するルールを自分で書く必要があります。' },
@@ -79,7 +86,7 @@ export const curriculum: Chapter[] = [
     ] },
   { id: 'linux', dir: '07-linux', title: 'Linuxネットワーク', subtitle: '「つながらない」を層ごとに切り分ける', level: 'PRACTICE', available: true, minutes: 90, goal: '「つながらない」を、NICからアプリケーションまで下の層から順に確かめ、最初に失敗した層を特定できる。',
     playground: { text: 'DNSサーバーとWebサーバーがある構成で、PC1のTerminalを使います。「ip addr」「ip route」「dig」「nc -zv」「curl -v」の順に実行し、下の層から1段ずつ結果を確かめましょう。', to: '/simulator?template=dns', label: 'DNS / Webのテンプレートを開く' },
-    mastery: { type: 'lab', labId: 'linux-mastery' },
+    mastery: { type: 'lab', labIds: ['linux-mastery'] },
     quiz: [
       { question: 'curlでWebサーバーに接続すると、すぐに「Connection refused」と表示されました。最も可能性が高いのはどれですか？', options: ['DNSの名前解決に失敗した', '宛先への経路がない', '相手には届いたが、そのポートで待ち受けていない（RSTかICMP port unreachableが返った）', '証明書が正しくない'], answer: 2, explanation: 'refusedは、相手（または途中のFirewallのREJECT）から拒否の応答が返ったことを表します。つまり、パケットは相手の近くまで届いています。途中で無言で捨てられたならtimed out、名前解決の失敗なら「Could not resolve host」と、別の表示になります。' },
       { question: 'curlが何度か待った後に「Connection timed out」で失敗しました。ここから推測できることはどれですか？', options: ['応答が何も返ってこなかった（途中で捨てられた、戻りの経路がない、相手が止まっている、など）', 'ポートが閉じていて、拒否の応答が返った', '名前解決できなかった', 'HTTPの500エラーが返った'], answer: 0, explanation: 'timed outは、SYNを再送しても何も返ってこなかったことを表します。無言で捨てるFirewall（DROP）や、行き・帰りの経路の問題を疑います。ポートが閉じているだけなら、RSTが返ってすぐにConnection refusedになります。' },
@@ -89,7 +96,7 @@ export const curriculum: Chapter[] = [
     ] },
   { id: 'capture', dir: '08-capture', title: 'パケット解析', subtitle: 'キャプチャから通信の事実を読み取る', level: 'PRACTICE', available: true, minutes: 60, goal: 'キャプチャから「実際に流れたもの」を読み取り、観測した事実と仮説を分けて説明できる。',
     playground: { text: 'Packet Analyzerで、シミュレータで記録したフレームや手元のPCAPファイルを開きます。「udp port 53」などのフィルタで絞り込み、1行を選んで階層表示とHex dump（バイト列）を見比べましょう。', to: '/analyzer', label: 'Packet Analyzerを開く' },
-    mastery: { type: 'lab', labId: 'capture-01' },
+    mastery: { type: 'lab', labIds: ['capture-01'] },
     quiz: [
       { question: 'キャプチャで、TCPのSYNが同じSeqのまま、間隔を広げて3回送られています。SYN, ACKもRSTも見えません。何が起きていると考えられますか？', options: ['正常な通信', '応答が届かず、SYNを再送している', 'ポートが閉じている', 'DNSの名前解決に失敗している'], answer: 1, explanation: '同じSeqのSYNが繰り返されるのは、返事がないため同じ接続の申し込みを送り直している状態です。ポートが閉じているだけならRSTが返り、名前解決の失敗ならSYN自体が送られません。途中での破棄や、SYN, ACKが戻れない経路の問題を疑います。' },
       { question: 'tcpdumpで、DNSの通常の問い合わせと応答だけを記録したい。キャプチャフィルタはどれですか？', options: ['port 80', 'udp port 53', 'icmp', 'arp'], answer: 1, explanation: 'DNSの通常の問い合わせはUDPの53番を使うので、「udp port 53」で絞れます。TCPの53番も含めたいときは「port 53」と書きます。port 80はHTTPの通信です。' },
@@ -97,28 +104,31 @@ export const curriculum: Chapter[] = [
       { question: 'あるパケットへの応答として、ICMP Destination Unreachable（Port Unreachable）が返ってきました。これは、どのプロトコルの通信への応答として典型的ですか？', options: ['UDP', 'ARP', 'Ethernet', 'STP'], answer: 0, explanation: '待ち受けていないUDPのポートに送ると、ホストはICMPのPort Unreachableを返します。TCPの場合は、代わりにRSTが返るのが一般的です。LinuxのUDP方式のtracerouteでも、最後の宛先がこれを返します。' },
       { question: 'キャプチャを調べた結果を、チームに報告します。大切なことはどれですか？', options: ['推測も事実として書く', '観測した事実（パケット番号付き）と、そこからの推測を分けて書く', 'スクリーンショットだけを貼る', '結論だけを書く'], answer: 1, explanation: '「No.1〜3でSYNが3回、SYN, ACKはない」は観測、「Firewallが落としている」は仮説です。根拠のパケット番号を添えて分けて書くと、ほかの人が同じキャプチャで検証できます。キャプチャに見えないことは観測点やフィルタの誤りでも起きるので、「見えない」を「送られていない」と断定しません。' },
     ] },
-  { id: 'topology', dir: '09-topology', title: 'ネットワーク構築', subtitle: '構成を組み、1ホップずつ確かめる', level: 'PRACTICE', available: true, minutes: 60, goal: '機器を配置・配線・設定して通信を通し、1ホップごとにMAC・VLAN・IP・TTLのどれが変わるかを説明できる。',
+  { id: 'topology', dir: '09-topology', title: 'ネットワーク構築', subtitle: '構成を組み、1ホップずつ確かめる', level: 'PRACTICE', available: true, minutes: 80, goal: '機器を配置・配線・設定して通信を通し、1ホップごとにMAC・VLAN・IP・TTLのどれが変わるかを説明できる。ボトルネックと単一障害点を見つけ、LACPとECMPを使い分けて設計を説明できる。',
     playground: { text: '「新規作成」で構成に名前を付け、何もない状態から始めます。パレットからPC・スイッチ・ルータを置いてケーブルでつなぎ、IPアドレスと経路を設定したらpingを送り、Packet Debuggerで1ホップずつヘッダの変化を追いましょう。', to: '/simulator', label: 'プレイグラウンドを開く' },
-    mastery: { type: 'lab', labId: 'topology-01' },
+    mastery: { type: 'lab', labIds: ['topology-01', 'design-mastery'] },
     quiz: [
       { question: 'PC1 → SW1 → R1 → R2 → PC2 とpingが進みます（NATなし）。IPヘッダの送信元・宛先IPアドレスはどうなりますか？', options: ['ホップごとに変わる', '最初から最後まで変わらない', 'ルータを通るたびに送信元と宛先が入れ替わる', 'スイッチを通るたびに変わる'], answer: 1, explanation: 'IPアドレスは最初の送信元と最終的な届け先を表すので、NATがなければ途中で変わりません。リンクごとに変わるのは、EthernetヘッダのMACアドレスです。ルータはMACアドレスを付け替え、TTLを1減らします。' },
       { question: 'パケットがL2スイッチを1台通過しました。IPヘッダのTTLはどうなりますか？', options: ['1減る', '変わらない', '初期値の64に戻る', '0になる'], answer: 1, explanation: 'TTLを減らすのは、IPを見て転送するルータ（L3）です。L2スイッチはMACアドレスを見てフレームを転送するだけで、IPヘッダを書き換えません。そのためTTLは変わりません。' },
       { question: 'スイッチどうしをつなぐトランクを流れるフレームに付くものはどれですか？', options: ['TTL', '802.1QのVLANタグ（ネイティブVLANのフレームを除く）', 'NATの変換情報', 'ポート番号'], answer: 1, explanation: 'トランクは複数のVLANを運ぶので、どのVLANのフレームかを示す802.1Qタグ（4バイト）を付けます。ただし、ネイティブVLANのフレームはタグなしで流れます。TTLはIPヘッダの中の値で、トランクで付け足されるものではありません。' },
       { question: '作ったネットワークの論理構成図に、必ず書いておきたいものはどれですか？', options: ['ケーブルの色', 'サブネット・VLAN・Gateway・経路の関係', '機器の価格', '設置場所の温度'], answer: 1, explanation: '論理構成図は「パケットがどう流れるか」に答える図なので、サブネット、VLAN、Gateway、ルーティングの範囲を書きます。どこに何が刺さっているかは物理構成図に書き、両方をそろえて管理します。経路の問題は論理構成図で、配線の障害は物理構成図で追います。' },
+      { question: 'スイッチ間に2本目のケーブルを足しました（STPは有効、LAGは使っていない）。得られるものはどれですか？', options: ['ケーブル1本の故障への備え（容量は増えない）', '容量が2倍になる', '容量も冗長性も変わらない'], answer: 0, explanation: 'STPは2本目をブロックして待機させるので、容量は1本分のままです。使っている1本が切れると、待機していた2本目に切り替わります。両方を使って容量も増やしたいなら、LAGで束ねます。帯域を増やすことと、可用性を高めることは別の目標です。' },
+      { question: 'R1から、別々のルータ（R2とR3）を通る2つの経路を同時に使いたいとき、適した仕組みはどれですか？', options: ['ECMP（等コストの経路をルーティングで使う）', 'LACPで束ねる', 'STPに任せる'], answer: 0, explanation: 'LACP（LAG）は、同じ相手機器との間の並列リンクを1つの論理リンクに束ねる仕組みです。相手が別々の機器（R2とR3）なら、L3の複数経路としてECMPで使います。STPはL2のループを防ぐための仕組みで、経路を分散させるものではありません。' },
+      { question: 'PC → SW1 → R1 → サーバー と1本ずつつながった構成で、単一障害点（壊れると通信が止まる箇所）はどれですか？', options: ['SW1、R1、そして間の各リンク', 'R1だけ', 'なし（今は通信できているから）'], answer: 0, explanation: '1本道の構成では、途中の機器とリンクのどれか1つが壊れるだけで通信が止まります。今通信できていることと、障害に強いことは別です。冗長化するときは、機器・リンク・経路のどれを二重にするのか、切り替えの仕組み（STP・LACP・ルーティング）まで含めて考えます。' },
     ] },
   { id: 'aws', dir: '10-aws', title: 'AWS VPC', subtitle: 'VPCの経路とフィルタを設計する', level: 'PROFESSIONAL', available: true, minutes: 90, goal: 'インターネットからEC2までの通信が届くかを、ルートテーブル・NACL・Security Groupの判定を行きと帰りでたどって説明できる。',
     playground: { text: 'AWS VPC Designerで「3層構成の例を開く」を選び、Web・アプリ・DBに分けたVPCを使います。送信元・宛先・ポートを選んで「分析」を実行し、行きと帰りのどのホップで止まるかを確認しましょう。ルートテーブルやNACLを変えて、結果の変化も確かめられます。', to: '/aws', label: 'AWS VPC Designerを開く' },
-    mastery: { type: 'lab', labId: 'aws-03' },
+    mastery: { type: 'lab', labIds: ['aws-03'] },
     quiz: [
       { question: 'AWSのサブネットが「パブリックサブネット」になるかどうかを決めるものはどれですか？', options: ['サブネットの名前', '関連付けたルートテーブルに、アタッチ済みのInternet Gatewayへの経路があるか', 'サブネットを置いたAZ', 'CIDRの大きさ'], answer: 1, explanation: 'パブリックかどうかは、サブネットの種類ではなく経路の結果です。ルートテーブルに 0.0.0.0/0 → igw- のような、アタッチ済みのIGWへの経路があればパブリックサブネットになります。名前に public と付けても、この経路がなければプライベートのままです。' },
       { question: 'Security Group（SG）の説明として正しいものはどれですか？', options: ['ステートレスで、戻りの通信にもルールが必要', '許可ルールだけを書き、許可した通信の戻りは自動で通す（ステートフル）', '番号順に評価し、拒否ルールも書ける', 'サブネット単位で付ける'], answer: 1, explanation: 'SGは、インスタンス（のENI）ごとに付くステートフルな許可リストです。許可した通信の戻りは、ルールに関係なく自動で通ります。番号順に評価して拒否ルールも書けるのは、サブネットの境界に付くNetwork ACLのほうです。' },
       { question: 'Network ACL（NACL）のインバウンドで443番を許可したのに、Webサイトが表示されません。戻りの通信のために、アウトバウンドで必要になりやすい設定はどれですか？', options: ['エフェメラルポート（1024〜65535）宛ての許可', 'ICMPの許可', 'Security Groupの参照', '追加の設定は要らない'], answer: 0, explanation: 'NACLはステートレスなので、行きを許可しても帰りは自動では通りません。帰りのパケットの宛先はクライアントが選んだエフェメラルポート（一時的なポート）なので、アウトバウンドで1024〜65535宛てを許可するのが一般的です。SGならステートフルなので、この設定は要りません。' },
       { question: 'プライベートサブネットのサーバーを、NAT Gateway経由でインターネットに出したい。NAT Gatewayはどこに作りますか？', options: ['そのプライベートサブネット', 'パブリックサブネット（IGWへの経路があるサブネット）', 'DBサブネット', 'どこでもよい'], answer: 1, explanation: 'NAT Gateway自身も、変換したパケットをInternet Gatewayへ送る必要があります。そのため、IGWへの経路があるパブリックサブネットに作り、Elastic IPを割り当てます。守りたいプライベートサブネットに置くと、NAT Gateway自身が外へ出られません。' },
-      { question: 'VPC AとVPC B、VPC BとVPC Cを、それぞれVPC Peeringでつなぎました。VPC AからVPC Cへは通信できますか？', options: ['Bを経由して通信できる', 'AとCを直接ピアリングしない限り通信できない（推移的ルーティング不可）', 'ルートを書けば通信できる', 'NACLしだいで通信できる'], answer: 1, explanation: 'VPC Peeringは推移的ではなく、BはAとCの間の通信を中継しません。AのルートテーブルにCの範囲を書いても、Bが転送しないので届きません。AからCへ届けるには、AとCを直接ピアリングするか、Transit Gatewayのようなハブを使います。' },
+      { question: 'VPC AとVPC B、VPC BとVPC Cを、それぞれVPC Peeringでつなぎました。VPC AからVPC Cへは通信できますか？', options: ['Bを経由して通信できる', 'Bを経由しては通信できない（Peeringは推移的ルーティング不可）', 'ルートを書けば通信できる', 'NACLしだいで通信できる'], answer: 1, explanation: 'VPC Peeringは推移的ではなく、BはAとCの間の通信を中継しません。AのルートテーブルにCの範囲を書いても、Bが転送しないので届きません。AからCへ届けるには、AとCを直接ピアリングするか、Transit Gatewayのようなハブを使います。' },
     ] },
   { id: 'vpn-bgp', dir: '11-vpn-bgp', title: 'VPN / BGP', subtitle: '拠点とクラウドを、トンネルとBGPでつなぐ', level: 'PROFESSIONAL', available: true, minutes: 90, goal: 'VPNトンネルに通信を流すための経路とBGPの経路広告の関係を、トンネル障害時の切り替えまで説明できる。',
     playground: { text: '拠点とクラウドを2本のIPsecトンネルでつなぎ、それぞれの上でBGPを動かした構成を開きます。片方のトンネルを止めて、「show ip bgp」で残ったトンネル経由の経路がBest Path（最良の経路）に切り替わる様子を確かめましょう。', to: '/simulator?template=vpn', label: 'VPN + BGP テンプレートを開く' },
-    mastery: { type: 'lab', labId: 'bgp-02' },
+    mastery: { type: 'lab', labIds: ['bgp-02'] },
     quiz: [
       { question: '拠点とVPCを、IPsecのトンネルモードでつないでいます。インターネット上でキャプチャしたとき、IPヘッダに見える送信元・宛先IPアドレスはどれですか？', options: ['元のパケットの送信元・宛先（社内のアドレス）', 'トンネル両端（ゲートウェイ）のアドレス', 'MACアドレスだけ', '何も見えない'], answer: 1, explanation: 'トンネルモードでは、元のパケット全体をESPで暗号化し、外側にゲートウェイどうしのIPヘッダを付けます。インターネットのルータは、この外側の宛先だけを見て転送します。内側の社内アドレスやポートは暗号化されて見えませんが、外側のIPアドレスまで隠れるわけではありません。' },
       { question: 'ルートベースVPNで、どの通信をトンネルに入れるかを決めるものはどれですか？', options: ['暗号化ACL', 'ルーティングテーブル（トンネルインターフェースへの経路）', 'DNS', 'NAT'], answer: 1, explanation: 'ルートベースVPNでは、トンネルを1本の仮想インターフェース（tunnel1など）として扱い、経路表でそこへ向けた通信がトンネルに入ります。経路は静的に書くことも、BGPで受け取ることもできます。暗号化ACLで条件を書くのは、ポリシーベースVPNのやり方です。' },
@@ -128,7 +138,7 @@ export const curriculum: Chapter[] = [
     ] },
   { id: 'terraform', dir: '12-terraform', title: 'Terraform', subtitle: 'ネットワークをコードで管理する', level: 'PROFESSIONAL', available: true, minutes: 90, goal: 'terraform plan の記号を読んで、何が作成・変更・作り直しになるかを apply の前に説明できる。',
     playground: { text: 'Terraform Labで、VPCやサブネットのコードを書きます。「terraform plan」で変更の予告を読み、「terraform apply」の結果がVPC図に反映される様子を確かめましょう（教育用のシミュレーションで、実際のAWSには何も作られません）。', to: '/terraform', label: 'Terraform Labを開く' },
-    mastery: { type: 'lab', labId: 'tf-04' },
+    mastery: { type: 'lab', labIds: ['tf-04'] },
     quiz: [
       { question: 'terraform plan の出力に「id = (known after apply)」と表示されました。これはどんな値ですか？', options: ['エラーになった値', 'リソースを作成するまで決まらない値（IDなど）', '変数の既定値', '削除される値'], answer: 1, explanation: 'VPCやサブネットのIDは、AWSのAPIで作成されて初めて決まります。そのため、planの時点では「(known after apply)」と表示されます。エラーではなく、そのIDを参照している側の値も、作成時に確定します。' },
       { question: 'サブネットの cidr_block を変えたら、planに「# forces replacement」が付きました。このまま apply すると何が起きますか？', options: ['その場で設定だけ更新される', 'リソースを削除して作り直す（-/+）', '何も起きない', 'stateだけが変わる'], answer: 1, explanation: 'サブネットのCIDRのように、作成後に変更できない属性を変えると、置き換え（-/+：削除して作り直し）になります。新しいリソースはIDが変わるので、参照している関連付けなども作り直しになることがあります。その場で変更できるのは、planに ~ と表示される変更です。' },

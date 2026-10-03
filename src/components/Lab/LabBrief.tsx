@@ -39,7 +39,7 @@ export default function LabBrief({ lab, assessment, onAssess, onExample }: { lab
     {assessment && <div className="assessment" aria-live="polite"><strong>{allPass ? 'すべての到達条件を満たしました！' : 'まだ満たしていない条件があります（×の項目）'}</strong>{assessment.map(c => <span key={c.label} className={c.pass ? 'passed' : 'not-passed'}><Icon name={c.pass ? 'check' : 'close'} size={15}/>{c.label}</span>)}</div>}
     {lab.questions && <Observations lab={lab}/>}
     {lab.diagnosis && (allPass || diag) && <div className="diagnosis"><strong>{lab.diagnosis.question}</strong>
-      <div className="diagnosis-options">{lab.diagnosis.options.map((o, i) => <button key={o} className={`quiz-option ${diag?.selected === i ? (diag.correct ? 'selected correct' : 'selected wrong') : ''}`} onClick={() => { void controller.answerQuiz(`diag:${lab.id}`, i, i === lab.diagnosis!.answer); onAssess?.(); }}><span>{String.fromCharCode(65 + i)}</span>{o}</button>)}</div>
+      <div className="diagnosis-options">{lab.diagnosis.options.map((o, i) => <button key={o} aria-pressed={diag?.selected === i} className={`quiz-option ${diag?.selected === i ? (diag.correct ? 'selected correct' : 'selected wrong') : ''}`} onClick={() => { void controller.answerQuiz(`diag:${lab.id}`, i, i === lab.diagnosis!.answer); onAssess?.(); }}><span>{String.fromCharCode(65 + i)}</span>{o}</button>)}</div>
       {diag && <p className={diag.correct ? 'success-text' : 'error-text'}>{diag.correct ? `正解。${lab.diagnosis.explanation}` : 'もう一度、観測した事実から考えてみましょう。'}</p>}</div>}
     {lab.diagnosis && !allPass && !diag && <p className="tiny muted diagnosis-later">直せたら「到達度を確認」を押します。そのあと、原因がどの層にあったかを答えると完了です。</p>}
     {done && lab.debrief && <div className="hint-box debrief"><Icon name="bulb" size={15}/> {lab.debrief}</div>}
@@ -49,7 +49,9 @@ export default function LabBrief({ lab, assessment, onAssess, onExample }: { lab
 function Observations({ lab }: { lab: Lab }) {
   const [draft, setDraft] = useState<Record<string, string>>(controller.observations);
   return <form className="mastery-form observations" onSubmit={e => { e.preventDefault(); void Promise.all(lab.questions!.map(q => controller.observe(q.label, draft[q.label] ?? ''))).then(() => controller.assess()); }}>
-    <strong>観察した値を記録する</strong>
-    {lab.questions!.map(q => { const saved = controller.observations[q.label]; return <label key={q.label}>{q.label}<input value={draft[q.label] ?? ''} onChange={e => setDraft({ ...draft, [q.label]: e.target.value })}/>{saved !== undefined && <small className={saved.trim() === q.answer ? 'success-text' : 'error-text'}>{saved.trim() === q.answer ? '一致' : 'まだ一致しません'}</small>}</label>; })}
+    <strong>{lab.questions!.some(q => q.options) ? '観察と設計の設問に答える' : '観察した値を記録する'}</strong>
+    {lab.questions!.map(q => { const saved = controller.observations[q.label]; return <label key={q.label}>{q.label}{q.options
+      ? <select value={draft[q.label] ?? ''} onChange={e => setDraft({ ...draft, [q.label]: e.target.value })}><option value="">選んでください</option>{q.options.map(o => <option key={o}>{o}</option>)}</select>
+      : <input value={draft[q.label] ?? ''} onChange={e => setDraft({ ...draft, [q.label]: e.target.value })}/>}{saved !== undefined && <small className={saved.trim() === q.answer ? 'success-text' : 'error-text'}>{saved.trim() === q.answer ? '一致' : 'まだ一致しません'}</small>}</label>; })}
     <button className="button small">記録して確認<Icon name="check" size={14}/></button></form>;
 }

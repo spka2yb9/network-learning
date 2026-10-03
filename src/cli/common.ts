@@ -58,3 +58,5 @@ export function traceroute(ctx: Context, target: string, mode: 'icmp' | 'udp' | 
     ...probes.map(p => `${String(p.ttl).padStart(2)}  ${p.address ? `${p.address}  ${p.result.elapsed} ms${p.marker ? ` ${p.marker}` : ''}` : '*'}`)].join('\n') + note(ctx, why);
 }
 export const pad = (s: string | number, n: number) => String(s).padEnd(n);
+/** 1000 → "1 Gbps", 100 → "100 Mbps", 2500 → "2.5 Gbps". */
+export const speedText = (mbps: number) => mbps >= 1000 ? `${+(mbps / 1000).toFixed(2)} Gbps` : `${+mbps.toFixed(1)} Mbps`;

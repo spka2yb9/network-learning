@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { lab } from '../../../application/LabController';
-import { forwardingKinds, hostKinds, switchingKinds, type DeviceState, type DnsType, type NatRule, type ServiceConfig } from '../../../simulator/core/types';
+import { forwardingKinds, hostKinds, switchingKinds, type DeviceState, type DnsType, type LagMode, type LoadBalance, type NatRule, type ServiceConfig } from '../../../simulator/core/types';
 import { installedRoutes } from '../../../simulator/l3/RoutingTable';
 import { formatRule, parseRule } from '../../../simulator/services/FirewallEngine';
 import { natRuleText } from '../../../simulator/services/Nat';
 import { dnsTypes, validateRecord } from '../../../simulator/services/Dns';
-import { dnsService, https, ssh, web } from '../../../simulator/scenarios/build';
+import { dnsService, https, lag, ssh, web } from '../../../simulator/scenarios/build';
+import { speedText } from '../../../cli/common';
 import { useUI } from '../../../stores/ui';
 import { Icon } from '../../Icon';
 import { RemoveButton, Rows, Section, TextApply, Toggle } from './common';
@@ -65,7 +66,7 @@ export function DnsZoneSection({ device }: { device: DeviceState }) {
       <input aria-label="レコードの値" placeholder={rec.type === 'MX' ? '10 mail.example.com.' : rec.type === 'CNAME' ? 'www.example.com.' : '203.0.113.81'} value={rec.value} onChange={e => setRec({ ...rec, value: e.target.value })}/>
       <button className="button small secondary"><Icon name="plus" size={12}/>レコードを追加</button>
     </form>}
-    <TextApply label="ゾーンを追加（ゾーン名）" value="" placeholder="corp.example." button="追加" onApply={v => { if (!v) return false; return update(c => { const origin = v.endsWith('.') ? v : `${v}.`; c.zones.push({ origin, records: [{ name: origin, type: 'SOA', ttl: 3600, value: `ns.${origin} admin.${origin} 1 7200 3600 1209600 300` }] }); }); }}/>
+    <TextApply label="ゾーンを追加（ゾーン名）" value="" placeholder="corp.example." button="追加" onApply={v => { if (!v) return false; return update(c => { const origin = v.endsWith('.') ? v : `${v}.`; if (c.zones.some(z => z.origin.toLowerCase() === origin.toLowerCase())) throw new Error(`ゾーン ${origin} はすでにあります`); c.zones.push({ origin, records: [{ name: origin, type: 'SOA', ttl: 3600, value: `ns.${origin} admin.${origin} 1 7200 3600 1209600 300` }] }); }); }}/>
   </Section>;
 }
 export function PolicySection({ device }: { device: DeviceState }) {
@@ -127,16 +128,37 @@ export function SwitchingSection({ device }: { device: DeviceState }) {
       <label>Bridge priority（小さいほどRootになりやすい）<select aria-label="STP priority" value={device.stp?.priority ?? 32768} onChange={e => lab.mutate(n => n.update(device.id, d => { d.stp = { enabled: d.stp?.enabled ?? true, priority: Number(e.target.value) }; }))}>{Array.from({ length: 16 }, (_, i) => i * 4096).map(p => <option key={p}>{p}</option>)}</select></label></div>
   </Section>;
 }
+/** Link aggregation: bundle physical ports into po<N> (GUI twin of `channel-group <N> mode ...`). */
+export function LagSection({ device }: { device: DeviceState }) {
+  const [group, setGroup] = useState('1'); const [mode, setMode] = useState<LagMode>('active'); const [ports, setPorts] = useState<string[]>([]);
+  if (!switchingKinds.includes(device.kind) && !forwardingKinds.includes(device.kind)) return null;
+  const lags = Object.entries(device.lagStatus ?? {});
+  const free = device.interfaces.filter(i => (i.kind ?? 'ethernet') === 'ethernet' && !i.channelGroup && !i.address);
+  const add = () => { if (lab.mutate(n => n.update(device.id, d => { const g = Number(group); if (!Number.isInteger(g) || g < 1 || g > 64) throw new Error('グループ番号は1〜64です'); if (!ports.length) throw new Error('束ねるポートを選んでください'); lag(d, g, mode, ...ports); }))) setPorts([]); };
+  return <Section title="Link Aggregation（LAG / LACP）" count={lags.length} open={lags.length > 0}>
+    {lags.map(([id, l]) => <div key={id}><div className="port-form-title"><strong>{id}</strong><span className="tag-mini">{l.protocol}</span><span className={`tag-mini ${l.up ? '' : 'warn'}`}>{l.up ? `Up · 合計 ${speedText(l.capacity)}` : 'Down'}</span></div>
+      <Rows rows={l.members.map(m => [m.port, m.flag === 'P' ? '束ねて使用中' : m.flag === 's' ? 'suspended' : 'down', m.flag === 'P' ? speedText(m.bandwidth) : m.reason,
+        <RemoveButton key={m.port} label={`${m.port} を ${id} から外す`} onClick={() => lab.mutate(n => n.update(device.id, d => { delete d.interfaces.find(i => i.id === m.port)!.channelGroup; }))}/>])} empty="メンバーがありません"/></div>)}
+    <div className="lag-add">
+      <div className="inline-selects"><label>グループ（po番号）<input aria-label="channel-group 番号" className="narrow" value={group} onChange={e => setGroup(e.target.value)}/></label>
+        <label>モード<select aria-label="LAGのモード" value={mode} onChange={e => setMode(e.target.value as LagMode)}><option value="active">active（LACP）</option><option value="passive">passive（LACP）</option><option value="on">on（static）</option></select></label></div>
+      <div className="lag-ports">{free.map(p => <label key={p.id} className="check"><input type="checkbox" checked={ports.includes(p.id)} onChange={e => setPorts(e.target.checked ? [...ports, p.id] : ports.filter(x => x !== p.id))}/>{p.id}</label>)}</div>
+      <button type="button" className="button small secondary" onClick={add}><Icon name="plus" size={12}/>選んだポートを束ねる</button></div>
+    <label>メンバーの選び方（ハッシュの入力）<select aria-label="port-channel load-balance" value={device.lagLoadBalance ?? 'src-dst-mixed-ip-port'} onChange={e => lab.mutate(n => n.update(device.id, d => { const v = e.target.value as LoadBalance; if (v === 'src-dst-mixed-ip-port') delete d.lagLoadBalance; else d.lagLoadBalance = v; }))}>
+      <option value="src-dst-mixed-ip-port">送信元/宛先IP＋ポート（src-dst-mixed-ip-port）</option><option value="src-dst-ip">送信元/宛先IP（src-dst-ip）</option><option value="src-dst-mac">送信元/宛先MAC（src-dst-mac）</option></select></label>
+    <p className="muted tiny">両端の機器で同じように束ねます。束ねたあとのVLAN・IPアドレスは、インターフェース一覧の po（Port-channel）で設定します。Terminalでは interface range g0/7-8 → channel-group 1 mode active です。</p>
+  </Section>;
+}
 export function LinkSection({ linkId }: { linkId: string }) {
   const link = lab.network.snapshot().links.find(l => l.id === linkId);
   if (!link) return <div className="empty-state">このリンクは見つかりません。構成図のケーブルをクリックして選び直してください。</div>;
   return <div className="properties-title-block"><h3>リンク</h3><p className="muted tiny">{link.sourceDevice} {link.sourceInterface} ⇄ {link.targetDevice} {link.targetInterface}</p>
     <div className="port-form-title"><strong>状態</strong><Toggle on={link.up} aria="リンク状態" onChange={up => lab.mutate(n => n.setLinkState(link.id, up))}/></div>
-    <form className="link-form" onSubmit={e => { e.preventDefault(); const f = e.currentTarget.elements; lab.mutate(n => n.setLinkProperties(link.id, { bandwidth: Number((f.namedItem('bw') as HTMLInputElement).value), latency: Number((f.namedItem('lat') as HTMLInputElement).value) })); }}>
-      <label>帯域（Mbps）<input name="bw" aria-label="帯域" type="number" defaultValue={link.bandwidth}/></label>
+    <form key={`${link.bandwidth}-${link.latency}`} className="link-form" onSubmit={e => { e.preventDefault(); const f = e.currentTarget.elements; lab.mutate(n => n.setLinkProperties(link.id, { bandwidth: Number((f.namedItem('bw') as HTMLInputElement).value), latency: Number((f.namedItem('lat') as HTMLInputElement).value) })); }}>
+      <label>リンク速度<select name="bw" aria-label="帯域" defaultValue={link.bandwidth}>{[...new Set([10, 100, 1000, 2500, 10_000, 25_000, 40_000, 100_000, link.bandwidth])].sort((a, b) => a - b).map(v => <option key={v} value={v}>{speedText(v)}</option>)}</select></label>
       <label>遅延（ms, 仮想）<input name="lat" aria-label="遅延" type="number" defaultValue={link.latency}/></label>
       <button className="button small secondary"><Icon name="check" size={12}/>適用</button></form>
-    <p className="muted tiny">帯域は、STPとOSPFのコスト計算に使われます。遅延は、シミュレータ内の時計（仮想時刻）に足されます。混雑（輻輳）や待ち行列（キュー）は再現していません。</p>
+    <p className="muted tiny">リンク速度は、STP・OSPFのコスト、LAGのメンバー条件、iperf3 の理論上限に使われます。遅延は、シミュレータ内の時計（仮想時刻）に足されます。混雑（輻輳）や待ち行列（キュー）は再現していません。実機では、両端のポート・モジュール・ケーブルがその速度に対応している必要があります。</p>
     <button className="button small text-danger" onClick={() => { lab.mutate(n => n.removeLink(link.id)); useUI.setState({ selectedLink: '' }); }}><Icon name="trash" size={14}/>ケーブルを外す</button>
   </div>;
 }

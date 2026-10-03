@@ -4,6 +4,9 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { lab } from '../../application/LabController';
 
+// Characters xterm.js (Unicode 6 widths, its default) draws in two cells, e.g. Japanese and full-width forms.
+const WIDE = /[\u1100-\u115f\u2329\u232a\u2e80-\u303e\u3040-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6\u{20000}-\u{2fffd}\u{30000}-\u{3fffd}]/u;
+
 export default function Terminal({ deviceId }: { deviceId: string }) {
   const container = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -27,7 +30,11 @@ export default function Terminal({ deviceId }: { deviceId: string }) {
     terminal.writeln('help と入力するとコマンド一覧を表示します。↑↓キーで前に入力したコマンドを呼び出せます。\r\n');
     mine.slice(-8).forEach(h => { terminal.writeln(`> ${h.command}`); if (h.output) terminal.writeln(h.output); });
     prompt();
-    const replace = (value: string) => { terminal.write(`\r\x1b[2K`); prompt(); line = value; terminal.write(line); };
+    // DECSET 45 (reverse wraparound) lets \b move back onto the previous row when the input has wrapped.
+    // Erasing with ESC[J/K at column 0 would clear that row's wrap flag, so a single character is blanked with spaces instead.
+    terminal.write('\x1b[?45h');
+    const cells = (text: string) => Array.from(text).reduce((n, ch) => n + (WIDE.test(ch) ? 2 : 1), 0);
+    const replace = (value: string) => { terminal.write(`${'\b'.repeat(cells(line))}\x1b[J${value}`); line = value; };
     const subscription = terminal.onData(data => {
       if (data === '\x1b[A') { historyIndex = Math.max(0, historyIndex - 1); replace(commands[historyIndex] ?? ''); return; }
       if (data === '\x1b[B') { historyIndex = Math.min(commands.length, historyIndex + 1); replace(commands[historyIndex] ?? ''); return; }
@@ -39,7 +46,7 @@ export default function Terminal({ deviceId }: { deviceId: string }) {
         if (line.trim() === 'clear') { terminal.clear(); commands.push(line); }
         else if (line.trim()) { const output = lab.execute(deviceId, line); if (output) terminal.writeln(output); commands.push(line); }
         line = ''; historyIndex = commands.length; prompt();
-      } else if (data === '\x7f') { if (line) { line = line.slice(0, -1); terminal.write('\b \b'); } }
+      } else if (data === '\x7f') { const last = Array.from(line).at(-1); if (last) { line = line.slice(0, -last.length); const n = cells(last); terminal.write('\b'.repeat(n) + ' '.repeat(n) + '\b'.repeat(n)); } }
       else if (data === '\x03') { terminal.writeln('^C'); line = ''; prompt(); }
       else if (data >= ' ' && line.length < 512) { line += data; terminal.write(data); }
     });

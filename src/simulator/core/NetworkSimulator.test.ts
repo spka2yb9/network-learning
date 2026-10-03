@@ -50,6 +50,25 @@ describe('Routing', () => {
     n.addRoute('R1', { destination: '172.16.0.2/32', nextHop: '172.16.0.1', preference: 1, metric: 0 });
     expect(resolveRoute(n.device('R1'), '172.16.0.1')).toBeUndefined();
   });
+  it('expands each recursive route once per lookup (unresolvable chains stay linear)', () => {
+    const n = routingScenario();
+    n.update('R1', d => { for (let i = 0; i < 8; i++) d.routes.push({ destination: `20.0.0.0/${8 + i}`, nextHop: `20.0.0.${i + 1}`, preference: 1, metric: 0, kind: 'static' }); });
+    const start = performance.now();
+    expect(resolveRoute(n.device('R1'), '20.0.0.1')).toBeUndefined();
+    expect(performance.now() - start).toBeLessThan(500);
+  });
+  it('an interface-only static route ARPs the destination directly instead of falling back to the default', () => {
+    const n = routingScenario(true);
+    n.addRoute('R1', { destination: '0.0.0.0/0', nextHop: '10.0.0.2', preference: 1, metric: 0 });
+    n.addRoute('R1', { destination: '172.16.0.0/16', interfaceId: 'g0/0', preference: 1, metric: 0 });
+    expect(resolveRoute(n.device('R1'), '172.16.1.1')).toMatchObject({ iface: { id: 'g0/0' }, nextHop: '172.16.1.1' });
+  });
+  it('table() / installed() return copies, not the live routes', () => {
+    const n = routingScenario(true);
+    n.table('R1').find(r => r.kind === 'static')!.nextHop = '10.0.0.99';
+    n.installed('R1').find(r => r.kind === 'static')!.preference = 255;
+    expect(n.device('R1').routes[0]).toMatchObject({ nextHop: '10.0.0.2', preference: 1 });
+  });
   it('skips a route whose next hop does not resolve; AD 255 is never used; re-entering a route updates its AD', () => {
     const n = routingScenario(true);
     n.addRoute('R1', { destination: '192.168.2.0/25', nextHop: '172.31.0.1', preference: 1, metric: 0 });

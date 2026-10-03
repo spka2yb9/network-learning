@@ -83,6 +83,8 @@ class LabController {
     this.workspaceRevision++;
     this.network = network; this.cli = new CliEngine(network); this.cli.explain = this.lab?.explain ?? true;
     this.result = undefined; this.assessment = undefined;
+    // Link ids (link-1, link-2, …) repeat across workspaces, so a selected cable must not carry over.
+    useUI.setState({ selectedLink: '' });
   }
   private changed(save = true) {
     this.assessment = undefined;
@@ -126,7 +128,12 @@ class LabController {
       this.changed(); return true;
     } catch (error) { useUI.setState({ notice: error instanceof Error ? error.message : String(error) }); return false; }
   }
-  moveDevice(id: string, position: { x: number; y: number }) { this.network.moveDevice(id, position); this.changed(); }
+  /** `byUser`: a drag edits the design; the automatic overlap separation does not. */
+  moveDevice(id: string, position: { x: number; y: number }, byUser = false) {
+    this.network.moveDevice(id, position);
+    if (byUser && !this.lab) this.design = { ...this.design, modified: true };
+    this.changed();
+  }
   execute(id: string, command: string) {
     const before = JSON.stringify(this.network.snapshot());
     const output = this.cli.execute(id, command);
@@ -184,7 +191,8 @@ class LabController {
     if (this.mutate(n => n.addDevice(createDevice(id, kind, ordinal, position ?? { x: 80 + snapshot.devices.length * 40, y: 60 })))) useUI.setState({ selectedDevice: id });
   }
   importLab(input: string) {
-    const snapshot: NetworkSnapshot = JSON.parse(input);
+    let snapshot: NetworkSnapshot;
+    try { snapshot = JSON.parse(input); } catch { throw new Error('JSONとして読み込めません。このアプリの「書き出し」で保存したファイルを選んでください'); }
     // Validate fully before replacing the current workspace.
     const network = NetworkSimulator.fromSnapshot(snapshot);
     this.install(network);
@@ -216,8 +224,8 @@ class LabController {
 }
 export async function completeLab(id: string) {
   await lab.markComplete(`lab:${id}`);
-  // A chapter is mastered by its designated final-state lab, not by the quiz.
-  const chapter = curriculum.find(c => c.mastery.type === 'lab' && c.mastery.labId === id);
-  if (chapter) await lab.markComplete(`${chapter.id}-mastery`);
+  // A chapter is mastered by its designated final-state labs (all of them), not by the quiz.
+  const chapter = curriculum.find(c => c.mastery.type === 'lab' && c.mastery.labIds.includes(id));
+  if (chapter?.mastery.type === 'lab' && chapter.mastery.labIds.every(x => lab.completed.has(`lab:${x}`))) await lab.markComplete(`${chapter.id}-mastery`);
 }
 export const lab = new LabController();

@@ -1,5 +1,5 @@
 import { createDevice, logicalMac, NetworkSimulator } from '../core/NetworkSimulator';
-import type { DeviceKind, DeviceState, ServiceConfig } from '../core/types';
+import type { DeviceKind, DeviceState, LagMode, ServiceConfig } from '../core/types';
 
 export interface DeviceSpec {
   id: string;
@@ -11,8 +11,8 @@ export interface DeviceSpec {
   routes?: [string, string][];
   set?: (d: DeviceState) => void;
 }
-/** Compact topology builder shared by every lab. Each call yields an independent simulator. */
-export function build(devices: DeviceSpec[], links: [string, string, string, string][], opts: { latency?: number } = {}) {
+/** Compact topology builder shared by every lab. Each call yields an independent simulator. Optional 5th link field: speed in Mbps (default 1000). */
+export function build(devices: DeviceSpec[], links: ([string, string, string, string] | [string, string, string, string, number])[], opts: { latency?: number } = {}) {
   const n = new NetworkSimulator();
   devices.forEach((spec, i) => {
     const d = createDevice(spec.id, spec.kind, i + 1, { x: spec.at[0], y: spec.at[1] });
@@ -27,7 +27,7 @@ export function build(devices: DeviceSpec[], links: [string, string, string, str
     spec.set?.(d);
     n.addDevice(d);
   });
-  links.forEach(([a, pa, b, pb], i) => n.connect({ id: `link-${i + 1}`, sourceDevice: a, sourceInterface: pa, targetDevice: b, targetInterface: pb, up: true, bandwidth: 1000, latency: opts.latency ?? 1 }));
+  links.forEach(([a, pa, b, pb, bandwidth = 1000], i) => n.connect({ id: `link-${i + 1}`, sourceDevice: a, sourceInterface: pa, targetDevice: b, targetInterface: pb, up: true, bandwidth, latency: opts.latency ?? 1 }));
   return n;
 }
 
@@ -36,6 +36,22 @@ export const web = (name = 'nginx', body = '<h1>It works!</h1>', port = 80): Ser
 export const https = (names: string[], body = '<h1>Secure page</h1>', name = 'nginx-tls'): ServiceConfig => ({ name, protocol: 'tcp', port: 443, app: 'https', running: true, bind: '0.0.0.0', http: { status: 200, body }, tls: { names, expired: false, selfSigned: false } });
 export const dnsService = (): ServiceConfig => ({ name: 'named', protocol: 'udp', port: 53, app: 'dns', running: true, bind: '0.0.0.0' });
 export const ssh = (): ServiceConfig => ({ name: 'sshd', protocol: 'tcp', port: 22, app: 'ssh', running: true, bind: '0.0.0.0' });
+/** `iperf3 -s`: target of the throughput measurement. */
+export const iperf = (): ServiceConfig => ({ name: 'iperf3', protocol: 'tcp', port: 5201, app: 'generic', running: true, bind: '0.0.0.0' });
+/** Bundle physical ports into `po<group>`. The port-channel takes the first member's L2 settings (like IOS). */
+export function lag(d: DeviceState, group: number, mode: LagMode, ...ports: string[]) {
+  const first = d.interfaces.find(i => i.id === ports[0])!;
+  if (!d.interfaces.some(i => i.id === `po${group}`)) d.interfaces.push({ id: `po${group}`, kind: 'port-channel', mac: logicalMac(d, 0x40, group), up: true, ...(first.switchport ? { switchport: structuredClone(first.switchport) } : {}) });
+  for (const p of ports) d.interfaces.find(i => i.id === p)!.channelGroup = { group, mode };
+}
+/** Add physical ports up to `count` (same naming and MAC scheme as createDevice). */
+export function addPorts(d: DeviceState, count: number) {
+  const base = d.interfaces[0].mac.split(':').slice(0, 5).join(':');
+  const switching = !!d.interfaces[0].switchport;
+  for (let i = d.interfaces.filter(x => (x.kind ?? 'ethernet') === 'ethernet').length; i < count; i++) {
+    d.interfaces.push({ id: switching ? `g0/${i + 1}` : `g0/${i}`, up: true, mac: `${base}:${(i + 1).toString(16).padStart(2, '0')}`, ...(switching ? { switchport: { mode: 'access', accessVlan: 1, allowedVlans: 'all', nativeVlan: 1 } } : {}) });
+  }
+}
 export function access(d: DeviceState, vlan: number, ...ports: string[]) {
   for (const p of ports) d.interfaces.find(i => i.id === p)!.switchport = { mode: 'access', accessVlan: vlan, allowedVlans: 'all', nativeVlan: 1 };
 }

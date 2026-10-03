@@ -46,6 +46,15 @@ describe('Encoding / decoding', () => {
     expect(d.error).toBe('truncated');
     expect(d.layers.at(-1)!.name).toContain('truncated');
   });
+  it('a ClientHello split across TCP segments (SNI in the 2nd) decodes as partial TLS, not malformed', () => {
+    const hello = dnsScenario().http('PC1', 'https://www.example.com/').captures.find(c => c.info.startsWith('Client Hello'))!;
+    const sni = decodeFrame(hello.bytes).layers.flatMap(l => l.fields).find(f => f.label === 'Server Name Indication')!;
+    const first = hello.bytes.slice(0, sni.offset - 4);
+    [first[16], first[17]] = [(first.length - 14) >> 8, (first.length - 14) & 255];
+    const d = decodeFrame(first);
+    expect(d.error).toBeUndefined();
+    expect(d.summary).toMatchObject({ protocol: 'TLS', info: expect.stringContaining('Client Hello') });
+  });
   it('encodes a DNS message byte-exactly', () => {
     const bytes = encodeDns({ id: 0x1234, response: false, opcode: 0, aa: false, rd: true, ra: false, rcode: 'NOERROR', question: { name: 'a.io.', type: 'A' }, answer: [], authority: [], additional: [] });
     expect(bytes).toEqual([0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0, 1, 97, 2, 105, 111, 0, 0, 1, 0, 1]);

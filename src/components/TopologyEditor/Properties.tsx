@@ -4,7 +4,7 @@ import { hostKinds } from '../../simulator/core/types';
 import { Icon } from '../Icon';
 import { kindLabel } from './TopologyEditor';
 import Interfaces from './properties/Interfaces';
-import { DnsZoneSection, LinkSection, PolicySection, ResolverSection, RoutingSection, ServicesSection, SwitchingSection } from './properties/Sections';
+import { DnsZoneSection, LagSection, LinkSection, PolicySection, ResolverSection, RoutingSection, ServicesSection, SwitchingSection } from './properties/Sections';
 
 export default function Properties() {
   useUI(s => s.revision); const id = useUI(s => s.selectedDevice); const linkId = useUI(s => s.selectedLink);
@@ -18,6 +18,7 @@ export default function Properties() {
     <Interfaces device={full}/>
     <RoutingSection device={full}/>
     <SwitchingSection device={full}/>
+    <LagSection device={full}/>
     {host && <ResolverSection device={full}/>}
     {host && <ServicesSection device={full}/>}
     <DnsZoneSection device={full}/>

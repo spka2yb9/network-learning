@@ -27,7 +27,7 @@ const hcl = StreamLanguage.define<{ inString: boolean }>({
   },
 });
 const style = HighlightStyle.define([
-  { tag: tags.keyword, color: '#1f6b57', fontWeight: '600' }, { tag: tags.string, color: '#9a5a2a' }, { tag: tags.comment, color: '#8a978f', fontStyle: 'italic' },
+  { tag: tags.keyword, color: '#1f6b57', fontWeight: '600' }, { tag: tags.string, color: '#9a5a2a' }, { tag: tags.comment, color: '#5b6b61', fontStyle: 'italic' },
   { tag: tags.number, color: '#5b52b8' }, { tag: tags.atom, color: '#5b52b8' }, { tag: tags.propertyName, color: '#2f5f8f' }, { tag: tags.function(tags.variableName), color: '#8a3f6e' },
   { tag: tags.special(tags.variableName), color: '#b0503f' }, { tag: tags.meta, color: '#b0503f' },
 ]);

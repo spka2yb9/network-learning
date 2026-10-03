@@ -12,7 +12,7 @@ export const awsTemplates = {
 
 export const terraformTemplates = {
   starter: { name: 'VPCだけの最小構成', description: 'terraform / provider / variable / output と VPC 1つ', build: () => ({ files: starterFiles() }) },
-  'three-tier': { name: '3層構成', description: '2つのAZにALB・アプリ・DB（network / security / compute に分割）', build: () => ({ files: threeTierFiles() }) },
+  'three-tier': { name: '3層構成', description: '2つのAZにALB・アプリ・NAT Gateway（DBなし。network / security / compute に分割）', build: () => ({ files: threeTierFiles() }) },
 };
 
 /** Named snapshots are independent of the automatically saved editing draft. */
@@ -20,7 +20,7 @@ export async function saveDesign(kind: DesignRecord['kind'], info: DesignInfo, n
   const trimmed = name.trim();
   if (!trimmed) throw new Error('構成名を入力してください。');
   // The same name updates that saved design (README: 同じ名前での保存はその保存済み構成を更新し…).
-  const id = info.savedId && trimmed === info.name ? info.savedId : (await db.designs.where('kind').equals(kind).filter(r => r.name === trimmed).first())?.id ?? crypto.randomUUID();
+  const id = info.savedId && trimmed === info.name ? info.savedId : (await db.designs.where('kind').equals(kind).filter(r => r.name === trimmed).first())?.id ?? `${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`; // not crypto.randomUUID(): missing over plain HTTP on the LAN
   await db.designs.put({ id, kind, name: trimmed, template: info.template, data: structuredClone(data), updatedAt: Date.now() });
   return { ...info, name: trimmed, savedId: id, modified: false };
 }

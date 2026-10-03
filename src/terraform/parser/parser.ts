@@ -50,8 +50,13 @@ function lex(src: string, file: string): Tok[] {
       while (true) {
         if (i >= src.length || src[i] === '\n') throw new HclError('文字列が閉じていません（" で閉じます。文字列は1行で書きます）', p);
         if (src[i] === '"') { adv(); break; }
-        if (src[i] === '\\' && src[i + 1] === 'u' && /^[0-9A-Fa-f]{4}$/.test(src.slice(i + 2, i + 6))) { buf += String.fromCharCode(parseInt(src.slice(i + 2, i + 6), 16)); adv(6); continue; }
-        if (src[i] === '\\') { const n = src[i + 1]; buf += n === 'n' ? '\n' : n === 't' ? '\t' : n; adv(2); continue; }
+        if (src[i] === '\\') {
+          const n = src[i + 1] ?? ''; const len = n === 'u' ? 4 : n === 'U' ? 8 : 0; const hex = src.slice(i + 2, i + 2 + len);
+          const cp = len && new RegExp(`^[0-9A-Fa-f]{${len}}$`).test(hex) ? parseInt(hex, 16) : NaN;
+          const ch = len ? (cp <= 0x10ffff ? String.fromCodePoint(cp) : undefined) : ({ n: '\n', r: '\r', t: '\t', '"': '"', '\\': '\\' } as Record<string, string>)[n];
+          if (ch === undefined) throw new HclError(`使えないエスケープです: \\${n}${hex}（使えるのは \\n \\r \\t \\" \\\\ \\uNNNN \\UNNNNNNNN）`, pos());
+          buf += ch; adv(2 + len); continue;
+        }
         if (src.startsWith('$${', i)) { buf += '${'; adv(3); continue; }
         if (src[i] === '$' && src[i + 1] === '{') {
           if (buf) parts.push(buf); buf = '';
@@ -82,8 +87,9 @@ export function parseHcl(src: string, file = 'main.tf'): Body {
 
 function parser(toks: Tok[]) {
   let k = 0;
-  const peek = () => toks[k];
-  const next = () => toks[k++];
+  const ignoreNl: boolean[] = []; // HCL: newlines are ignored inside ( ) and [ ] (but separate entries inside { })
+  const peek = () => { if (ignoreNl.at(-1)) while (toks[k].t === 'nl') k++; return toks[k]; };
+  const next = () => { peek(); return toks[k++]; };
   const skipNl = () => { while (peek().t === 'nl') k++; };
   const is = (v: string) => peek().t === 'punct' && peek().v === v;
   const expect = (v: string) => { const t = next(); if (t.t !== 'punct' || t.v !== v) throw new HclError(`"${v}" が必要です（"${t.v || t.t}" があります）`, t.pos); return t; };
@@ -170,18 +176,19 @@ function parser(toks: Tok[]) {
       if (t.v === 'true' || t.v === 'false') return { kind: 'literal', value: t.v === 'true', pos: t.pos };
       if (t.v === 'null') return { kind: 'literal', value: null, pos: t.pos };
       if (t.v === 'for') throw new HclError('for 式は教育用パーサーでは未対応です。繰り返しは count と count.index で書いてください', t.pos);
-      if (is('(')) { k++; return { kind: 'call', name: t.v, args: list(')', expr), pos: t.pos }; }
+      if (is('(')) { k++; ignoreNl.push(true); const args = list(')', expr); ignoreNl.pop(); return { kind: 'call', name: t.v, args, pos: t.pos }; }
       return { kind: 'ref', root: t.v, path: [], pos: t.pos };
     }
-    if (t.t === 'punct' && t.v === '(') { skipNl(); const e = expr(); skipNl(); expect(')'); return e; }
+    if (t.t === 'punct' && t.v === '(') { ignoreNl.push(true); const e = expr(); expect(')'); ignoreNl.pop(); return e; }
     if (t.t === 'punct' && t.v === '[') {
       skipNl();
       if (peek().t === 'ident' && peek().v === 'for') throw new HclError('for 式は教育用パーサーでは未対応です。繰り返しは count と count.index で書いてください', peek().pos);
-      return { kind: 'list', items: list(']', expr), pos: t.pos };
+      ignoreNl.push(true); const items = list(']', expr); ignoreNl.pop();
+      return { kind: 'list', items, pos: t.pos };
     }
     if (t.t === 'punct' && t.v === '{') {
       // Object entries are separated by commas or newlines.
-      const entries: { key: string; value: Expr }[] = [];
+      const entries: { key: string; value: Expr }[] = []; ignoreNl.push(false);
       while (true) {
         skipNl();
         if (is('}')) break;
@@ -192,7 +199,7 @@ function parser(toks: Tok[]) {
         if (is(',')) k++;
         else if (peek().t !== 'nl' && !is('}')) throw new HclError('オブジェクトの要素はカンマか改行で区切ります', peek().pos);
       }
-      expect('}');
+      expect('}'); ignoreNl.pop();
       return { kind: 'object', entries, pos: t.pos };
     }
     throw new HclError(`ここには値（式）が必要です（"${t.v || t.t}"）`, t.pos);

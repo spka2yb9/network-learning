@@ -90,6 +90,8 @@ class TerraformController {
   output: { command: string; text: string }[] = [];
   assessment?: CheckResult[];
   activeFile = 'main.tf';
+  /** Bumped whenever `ws` is replaced, so the editor starts fresh (no undo into the previous design, no false "edited"). */
+  revision = 0;
   design: DesignInfo = { name: '3層構成', template: 'three-tier' };
   private later = debounce();
   private opened = 0;
@@ -104,7 +106,7 @@ class TerraformController {
     // Only the latest open() installs its workspace; id and files always change together.
     if (seq !== this.opened) return;
     this.id = id; this.design = design; this.assessment = undefined; this.output = [];
-    this.ws = new TerraformWorkspace(snap);
+    this.ws = new TerraformWorkspace(snap); this.revision++;
     this.activeFile = this.firstFile();
     useUI.getState().changed();
   }
@@ -119,14 +121,15 @@ class TerraformController {
   }
   edit(file: string, text: string) { this.ws.files[file] = text; this.touched(); }
   addFile(name: string) {
-    if (!/^([a-z0-9_-]+\/)*[a-z0-9_-]+\.(tf|tfvars)$/.test(name)) { useUI.setState({ notice: 'ファイル名は xxx.tf / xxx.tfvars（modules/名前/main.tf も可）です' }); return; }
+    // Only the .tfvars files Terraform loads automatically: terraform.tfvars and *.auto.tfvars (at the root).
+    if (!/^(([a-z0-9_-]+\/)*[a-z0-9_-]+\.tf|terraform\.tfvars|[a-z0-9_-]+\.auto\.tfvars)$/.test(name)) { useUI.setState({ notice: 'ファイル名は xxx.tf / terraform.tfvars / xxx.auto.tfvars（modules/名前/main.tf も可）です' }); return; }
     if (!(name in this.ws.files)) this.ws.files[name] = '';
     this.activeFile = name; this.touched(); useUI.getState().changed();
   }
-  removeFile(name: string) { if (Object.keys(this.ws.files).length <= 1) return; delete this.ws.files[name]; this.activeFile = Object.keys(this.ws.files)[0]; this.touched(); useUI.getState().changed(); }
+  removeFile(name: string) { if (Object.keys(this.ws.files).length <= 1) return; delete this.ws.files[name]; if (this.activeFile === name) this.activeFile = this.firstFile(); this.touched(); useUI.getState().changed(); }
   setDesign(info: DesignInfo) { this.design = info; this.persist(); useUI.getState().changed(); }
   load(snapshot: Partial<WorkspaceSnapshot>, info: DesignInfo) {
-    this.ws = new TerraformWorkspace(snapshot); this.design = info;
+    this.ws = new TerraformWorkspace(snapshot); this.revision++; this.design = info;
     this.output = []; this.assessment = undefined; this.activeFile = this.firstFile();
     this.persist(); useUI.setState({ notice: '' }); useUI.getState().changed();
   }
@@ -145,7 +148,7 @@ class TerraformController {
   reset(example = false) {
     const def = this.lab;
     const template = terraformTemplates[this.design.template as keyof typeof terraformTemplates];
-    this.ws = new TerraformWorkspace(def ? def.build() : template ? template.build() : { files: { 'main.tf': '' } });
+    this.ws = new TerraformWorkspace(def ? def.build() : template ? template.build() : { files: { 'main.tf': '' } }); this.revision++;
     if (example && def) def.solve(this.ws);
     if (!def) this.design = { ...this.design, modified: true };
     this.output = []; this.assessment = undefined; this.activeFile = this.firstFile(); this.persist(); useUI.getState().changed();

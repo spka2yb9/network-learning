@@ -49,7 +49,7 @@ output "vpc_id" {
 `,
 });
 
-/** Capstone 4 expressed as Terraform: ALB in public subnets, app in private subnets, DB isolated. */
+/** Capstone 4 expressed as Terraform: ALB in public subnets, app in private subnets (no DB tier: capstone-6 adds it). */
 export const threeTierFiles = (): Record<string, string> => ({
   ...starterFiles(),
   'network.tf': `# 使えるAZ（Availability Zone）の一覧を読み取ります。data は、既存の情報を読むだけのブロックです。

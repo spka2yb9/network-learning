@@ -76,8 +76,10 @@ export function computeOspf(devices: DeviceState[], segmentPeers: SegmentPeers, 
   const byRid = new Map(result.lsdb.map(l => [l.routerId, l]));
   // A link is usable only when both ends list each other (two-way check).
   const edges = (l: RouterLsa) => l.links.filter((x): x is Extract<LsaLink, { type: 'router' }> => x.type === 'router' && !!byRid.get(x.neighborId)?.links.some(y => y.type === 'router' && y.neighborId === l.routerId));
+  type FirstHop = Extract<LsaLink, { type: 'router' }>;
   for (const self of result.lsdb) {
-    const dist = new Map<string, { cost: number; first?: Extract<LsaLink, { type: 'router' }>; path: string[] }>([[self.routerId, { cost: 0, path: [self.device] }]]);
+    // Dijkstra keeping every first hop of equal-cost shortest paths (costs are ≥ 1, so a router's set is complete when it is taken).
+    const dist = new Map<string, { cost: number; first: FirstHop[]; path: string[] }>([[self.routerId, { cost: 0, first: [], path: [self.device] }]]);
     const done = new Set<string>();
     while (true) {
       const next = [...dist.entries()].filter(([r]) => !done.has(r)).sort((a, b) => a[1].cost - b[1].cost || a[0].localeCompare(b[0]))[0];
@@ -87,26 +89,33 @@ export function computeOspf(devices: DeviceState[], segmentPeers: SegmentPeers, 
       for (const e of edges(lsa)) {
         const cost = info.cost + e.cost;
         const old = dist.get(e.neighborId);
-        if (!old || cost < old.cost) dist.set(e.neighborId, { cost, first: info.first ?? e, path: [...info.path, byRid.get(e.neighborId)!.device] });
+        const first = info.first.length ? info.first : [e];
+        if (!old || cost < old.cost) dist.set(e.neighborId, { cost, first, path: [...info.path, byRid.get(e.neighborId)!.device] });
+        else if (cost === old.cost && !done.has(e.neighborId)) old.first = [...old.first, ...first.filter(f => !old.first.some(o => o.address === f.address && o.interfaceId === f.interfaceId))];
       }
     }
     result.spf.set(self.device, [...dist.entries()].map(([r, v]) => ({ routerId: r, device: byRid.get(r)!.device, cost: v.cost, path: v.path })));
     const own = new Set(self.links.filter(l => l.type === 'stub').map(l => (l as { prefix: string }).prefix));
-    const best = new Map<string, Route>();
+    const best = new Map<string, { cost: number; tie: number; first: (FirstHop & { info: string })[] }>();
     for (const [r, v] of dist) {
-      if (r === self.routerId || !v.first) continue;
+      if (r === self.routerId || !v.first.length) continue;
       const lsa = byRid.get(r)!;
-      const candidates = [...lsa.links.filter((l): l is Extract<LsaLink, { type: 'stub' }> => l.type === 'stub').map(l => ({ prefix: l.prefix, cost: v.cost + l.cost, info: 'O' })),
-        ...lsa.external.map(prefix => ({ prefix, cost: 1, info: 'O*E2' }))];
+      // E2 with equal metric: the closer ASBR wins, ECMP only if that cost ties too (RFC 2328 16.4(6)).
+      const candidates = [...lsa.links.filter((l): l is Extract<LsaLink, { type: 'stub' }> => l.type === 'stub').map(l => ({ prefix: l.prefix, cost: v.cost + l.cost, tie: 0, info: 'O' })),
+        ...lsa.external.map(prefix => ({ prefix, cost: 1, tie: v.cost, info: 'O*E2' }))];
       for (const c of candidates) {
         if (own.has(c.prefix)) continue;
         const old = best.get(c.prefix);
-        if (!old || c.cost < old.metric || (c.cost === old.metric && ipv4(v.first.address) < ipv4(old.nextHop!))) {
-          best.set(c.prefix, { destination: c.prefix, nextHop: v.first.address, interfaceId: v.first.interfaceId, preference: 110, metric: c.cost, kind: 'ospf', info: `${c.info} via ${lsa.device}` });
-        }
+        const first = v.first.map(f => ({ ...f, info: `${c.info} via ${lsa.device}` }));
+        if (!old || c.cost < old.cost || (c.cost === old.cost && c.tie < old.tie)) best.set(c.prefix, { cost: c.cost, tie: c.tie, first });
+        else if (c.cost === old.cost && c.tie === old.tie) old.first = [...old.first, ...first.filter(f => !old.first.some(o => o.address === f.address && o.interfaceId === f.interfaceId))];
       }
     }
-    result.routes.set(self.device, [...best.values()]);
+    // ECMP: up to maximum-paths equal-cost next hops per prefix (lowest next-hop addresses first).
+    const max = devices.find(d => d.id === self.device)?.ospf?.maximumPaths ?? 4;
+    result.routes.set(self.device, [...best].flatMap(([prefix, b]) => [...b.first].sort((x, y) => ipv4(x.address) - ipv4(y.address)).slice(0, max).map(f => ({
+      destination: prefix, nextHop: f.address, interfaceId: f.interfaceId, preference: 110, metric: b.cost, kind: 'ospf' as const, info: f.info,
+    }))));
   }
   return result;
 }

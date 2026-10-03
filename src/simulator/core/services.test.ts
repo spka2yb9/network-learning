@@ -48,6 +48,16 @@ describe('DNS', () => {
     expect(n.dnsLookup('PC1', 'old.example.com', 'CNAME').message).toMatchObject({ rcode: 'NOERROR', answer: [{ value: 'gone.example.com.' }] });
     expect(n.device('RESOLVER').dnsCache!.filter(e => e.negative).map(e => e.name)).toEqual(['gone.example.com.']);
   });
+  it('a CNAME into a delegated child returns the CNAME plus a referral, not NXDOMAIN', () => {
+    const records = [{ name: 'www.example.com.', type: 'CNAME' as const, ttl: 300, value: 'web.sub.example.com.' }, { name: 'sub.example.com.', type: 'NS' as const, ttl: 300, value: 'ns.sub.example.com.' },
+      { name: 'ns.sub.example.com.', type: 'A' as const, ttl: 300, value: '198.51.100.40' }];
+    expect(authoritativeAnswer([{ origin: 'example.com.', records }], { name: 'www.example.com.', type: 'A' })).toMatchObject({ rcode: 'NOERROR', answer: [records[0]], authority: [records[1]], additional: [records[2]] });
+  });
+  it('a server that answers with ICMP Port Unreachable is reported as connection refused', () => {
+    const r = dnsScenario().dnsLookup('PC1', 'www.example.com', 'A', { server: '203.0.113.80' });
+    expect(r.success).toBe(false);
+    expect(r.reason).toContain('connection refused');
+  });
   it('authoritative-only servers answer their zone and refuse recursion', () => {
     const n = dnsScenario();
     const direct = n.dnsLookup('PC1', 'www.example.com', 'A', { server: '198.51.100.30' });
@@ -75,6 +85,9 @@ describe('DNS', () => {
     expect(() => validateRecord({ name: 'a.example.com', type: 'A', ttl: 60, value: '999.1.1.1' })).toThrow();
     expect(validateRecord({ name: 'a.example.com', type: 'MX', ttl: 60, value: '10 mail.example.com' }).value).toBe('10 mail.example.com.');
     expect(authoritativeAnswer([{ origin: 'example.com.', records: [] }], { name: 'x.example.com.', type: 'A' })?.rcode).toBe('NXDOMAIN');
+  });
+  it('TXT length is checked in UTF-8 bytes (what goes on the wire)', () => {
+    expect(() => validateRecord({ name: 'example.com', type: 'TXT', ttl: 60, value: 'あ'.repeat(100) })).toThrow();
   });
 });
 
@@ -177,6 +190,13 @@ describe('NAT', () => {
     expect(r.status).toBe(200);
     expect(r.body).toContain('NAS');
   });
+  it('ICMP errors from inside are translated outbound: outer source and the quoted destination become inside-global', () => {
+    const n = natScenario();
+    n.update('R1', d => { d.nat!.push({ id: 'dns', type: 'port-forward', protocol: 'udp', outside: '203.0.113.2', outsidePort: 53, inside: '192.168.1.20', insidePort: 53 }); });
+    const r = n.dnsLookup('EXT', 'www.example.com', 'A', { server: '203.0.113.2' });
+    const icmp = r.captures.find(c => c.deviceId === 'R1' && c.interfaceId === 'g0/1' && c.packet?.protocol === 'ICMP')?.packet as IcmpPacket;
+    expect(icmp).toMatchObject({ source: '203.0.113.2', original: { destination: '203.0.113.2', destinationPort: 53 } });
+  });
   it('static NAT maps one inside host 1:1', () => {
     const n = natScenario();
     n.update('R1', d => { d.nat = [{ id: 's1', type: 'static', inside: '192.168.1.20', outside: '203.0.113.2' }]; });
@@ -230,6 +250,11 @@ describe('Firewall', () => {
     expect(r.success).toBe(false);
     expect(r.reply?.code).toBe(13);
     expect(n.traceroute('PC1', '192.168.2.10').at(-1)?.marker).toBe('!X');
+  });
+  it('TCP traceroute stops when the destination REJECTs with Port Unreachable', () => {
+    const n = routingScenario(true);
+    n.update('PC2', d => { d.firewall = { stateful: false, defaultAction: 'permit', rules: [parseRule(1, 'reject tcp any any eq 80'.split(' '))] }; });
+    expect(n.traceroute('PC1', '192.168.2.10', 16, 'tcp', 80).map(p => p.address)).toEqual(['192.168.1.1', '10.0.0.2', '192.168.2.10']);
   });
   it('Linux host INPUT chain with conntrack', () => {
     const n = dnsScenario();

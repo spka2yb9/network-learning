@@ -13,14 +13,15 @@
 | 11 | AWS VPCモデルとVPC Designer | public性はIGWへの経路で判定、SGステートフル / NACLステートレスとエフェメラルポート、往復分析 |
 | 12 | VPN（GRE / IPsec）・BGP | トンネル確立条件、ネイバー状態、広告、AS_PATHループ拒否、LOCAL_PREF/MED/prependでのベストパス、フェイルオーバー |
 | 13 | CodeMirror、限定HCL、plan / apply / drift / import / lock / module | AWSモデルへの変換、依存順序、未対応構文の拒否、state差分 |
+| 14 | 冗長化と帯域: Link Aggregation（LACP / static、L2・L3のPort-channel）、ECMP（静的・OSPF、per-flowのハッシュ、maximum-paths）、リンク速度と帯域モデル（iperf3・ethtool）、Debuggerの Path 表示、第3・4・9章の教材・可視化・ラボ、Capstone 1 の冗長化要件 | 正常な束ね・メンバーの追加/削除/Down・全メンバーDown・active/passive・不正な構成・LAG上のトランク・STPから1ポート、複数Next Hop・コスト/AD違いは非ECMP・フローの固定・異なるフローの分散・経路Down時の除外と復旧・2つ先の故障（静的は検出できずOSPFは収束）・tracerouteとDebuggerの一致、ボトルネック・LAGの集約容量・メンバー障害での容量低下 |
 
-6つのCapstone（企業LAN、複合障害、パケット分析、AWS 3層、Hybrid、Terraform）も実装し、最終状態で採点しています。
+6つのCapstone（企業LAN、複合障害、パケット分析、AWS 3層、Hybrid、Terraform）も実装し、最終状態で採点しています。Capstone 1（企業LAN）には「SW1–CORE・CORE–FW の2本はケーブル1本の故障で止めず、平常時は2本とも使う」「FW–ISPは1本」という要件を、技術名を指定せずに加えています（LACP・ECMP・L3のPort-channelなど、区間ごとに学習者が選ぶ）。
 
 ## 障害シナリオ（再現できるもの）
 
 Troubleshooting Lab・Capstoneとして用意しているもの、またはプレイグラウンドで再現できるもの（native VLAN不一致・STPなしのループはプレイグラウンドとユニットテストのみ）:
 
-IP・マスク・Gatewayの誤り、Interface / Link Down、ARP未解決、経路不足・戻り経路不足・ループ、VLAN誤り・access/trunk誤り・trunk許可漏れ・native VLAN不一致、STPなしのループ、DNSの設定・レコード・委任・再帰拒否、NAT不足、Firewall/ACLのdrop、Linuxのiptables・サービス停止・bind誤り・証明書、AWSの経路不足・SG拒否・NACL拒否・IGW不足・NAT不足、VPNの経路不足・PSK不一致、BGPのネイバーDown・広告不足・フィルタ。
+IP・マスク・Gatewayの誤り、Interface / Link Down、ARP未解決、経路不足・戻り経路不足・ループ、VLAN誤り・access/trunk誤り・trunk許可漏れ・native VLAN不一致、STPなしのループ、LACPのモード不一致（static と LACP・passive同士・片側だけ）・メンバーの速度不一致・メンバー/全メンバーのDown、ECMPの経路故障（隣の故障は自動で除外、2つ先の故障は静的ルートで一部のフローだけ失敗）、ボトルネック、単一障害点、Default Route経由で解決されてしまう静的ルートのNext Hop、DNSの設定・レコード・委任・再帰拒否、NAT不足、Firewall/ACLのdrop、Linuxのiptables・サービス停止・bind誤り・証明書、AWSの経路不足・SG拒否・NACL拒否・IGW不足・NAT不足、VPNの経路不足・PSK不一致、BGPのネイバーDown・広告不足・フィルタ。
 
 採点は観測ログではなく最終状態で行い、修正手順の完全一致は求めません。指定範囲以外の通信を許してしまう回避策を合格にしないよう、正の到達性テストと負の到達性テスト（分離）を組み合わせています。
 
@@ -28,7 +29,8 @@ IP・マスク・Gatewayの誤り、Interface / Link Down、ARP未解決、経�
 
 優先度は 正確性 > 理解しやすさ > 操作性 > 機能数 > 見た目 の順です。
 
-- **精度**: TCPのwindow・再送タイマー、MTU/fragmentationとPMTUD、ECMP、OSPFのエリア間集約とLSAの種類、BGPのORIGIN・Weight・IGPメトリック。
+- **精度**: TCPのwindow・再送タイマー、MTU/fragmentationとPMTUD、OSPFのエリア間集約とLSAの種類、BGPのORIGIN・Weight・IGPメトリック。
+- **冗長化の続き（必要になった場合のみ）**: 障害検出と収束の時間（OSPFのDead間隔・BFD）を仮想時刻で表す、FHRP（VRRP / HSRP）でGatewayの単一障害点を扱う、BGP multipath、resilient hashing。いずれも現在のCoreの `resolveRoute` の候補集合と `computeLag` の状態に追加する形で拡張できます。QoS・キュー・TCPの輻輳制御・MLAG・データセンターのファブリック（VXLAN / EVPN）は、現在の教材の目的（リンク集約・複数経路・帯域・冗長化の考え方）を超えるため予定していません。
 - **IPv6の転送**: NDP、SLAAC、デュアルスタックの章。現在は分析ツールとデコードのみ。
 - **DHCP**: DORAの流れとリレー。現在は概念説明のみ。
 - **Worker化**: 大規模トポロジー（100機器超）で操作が重くなった場合、Coreを`postMessage`の境界でWeb Workerへ移す。

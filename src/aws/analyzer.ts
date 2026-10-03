@@ -94,6 +94,7 @@ function route(t: Trace, m: AwsModel, node: Node, dst: string, direction: Direct
   return r.target;
 }
 function listen(t: Trace, node: Node, flow: Flow) {
+  if (node.kind === 'lb' && flow.protocol !== 'tcp') return t.step('request', 'Load Balancer', node.name, false, `${node.name} は ${flow.protocol.toUpperCase()} の通信を受け付けません。ロードバランサーが扱うのはリスナー（TCP / HTTP / HTTPS）で待ち受ける通信だけで、ping（ICMP）にも応答しません`);
   if (flow.protocol === 'icmp' || !node.listens) return t.step('request', node.kind === 'lb' ? 'Load Balancer' : 'Instance', node.name, 'info', 'ICMP（ping など）にはOSが応答するため、待ち受けの設定は関係ありません');
   const ok = node.listens(flow.protocol, flow.dstPort);
   return t.step('request', node.kind === 'lb' ? 'Load Balancer' : 'Instance', node.name, ok, ok
@@ -170,8 +171,8 @@ function outboundLeg(t: Trace, m: AwsModel, src: Node, dstIp: string, flow: Flow
   }
   if (target.startsWith('vpce-')) {
     const e = byId(m.endpoints, target);
-    const ok = !!e && kind === 'service' && contains(servicePrefix[e.service].cidr, dstIp);
-    if (!t.step('request', 'VPC Endpoint', target, ok, ok ? `Gateway型VPCエンドポイント ${target} を通って ${e!.service.toUpperCase()} へ届きます（インターネットやNAT Gatewayを通りません）` : `エンドポイント ${target} では、宛先 ${dstIp} に届きません。Gateway型エンドポイントで届くのは、対象サービス（S3 / DynamoDB）のアドレスだけです`)) return false;
+    const ok = !!e && e.vpcId === src.subnet!.vpcId && kind === 'service' && contains(servicePrefix[e.service].cidr, dstIp);
+    if (!t.step('request', 'VPC Endpoint', target, ok, ok ? `Gateway型VPCエンドポイント ${target} を通って ${e!.service.toUpperCase()} へ届きます（インターネットやNAT Gatewayを通りません）` : e && e.vpcId !== src.subnet!.vpcId ? `エンドポイント ${target} は別のVPC（${e.vpcId}）のものです。Gateway型エンドポイントは、作成したVPCのルートテーブルからしか使えません` : `エンドポイント ${target} では、宛先 ${dstIp} に届きません。Gateway型エンドポイントで届くのは、対象サービス（S3 / DynamoDB）のアドレスだけです`)) return false;
     return enter(t, m, src, back, outside, 'response');
   }
   if (target.startsWith('vgw-')) {

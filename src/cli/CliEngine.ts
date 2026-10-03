@@ -7,7 +7,7 @@ import { iosCommand } from './ios';
 import { linuxCommand } from './linux';
 
 export type Mode = 'user' | 'privileged' | 'config' | 'interface' | 'vlan' | 'router-ospf' | 'router-bgp' | 'acl';
-export interface Session { mode: Mode; iface?: string; vlan?: number; acl?: string }
+export interface Session { mode: Mode; iface?: string; vlan?: number; acl?: string; /** `interface range`: the ports a sub-mode command applies to. */ range?: string[] }
 export interface Context { id: string; tokens: string[]; session: Session; device: DeviceState; network: NetworkSimulator; cli: CliEngine }
 
 /** Last operation shown in the Packet Debugger / Event Log. */
@@ -41,7 +41,7 @@ export class CliEngine {
     const d = this.network.device(id);
     if (hostKinds.includes(d.kind)) return `user@${id}:~$`;
     const s = this.session(id);
-    return id + ({ user: '>', privileged: '#', config: '(config)#', interface: '(config-if)#', vlan: '(config-vlan)#', 'router-ospf': '(config-router)#', 'router-bgp': '(config-router)#', acl: '(config-ext-nacl)#' }[s.mode]);
+    return id + ({ user: '>', privileged: '#', config: '(config)#', interface: s.range ? '(config-if-range)#' : '(config-if)#', vlan: '(config-vlan)#', 'router-ospf': '(config-router)#', 'router-bgp': '(config-router)#', acl: '(config-ext-nacl)#' }[s.mode]);
   }
   execute(id: string, input: string) {
     this.lastResult = undefined;

@@ -32,6 +32,13 @@ describe('AWS model', () => {
     expect(errors).toContain('予約アドレス');
     expect(errors).toContain('2つ以上');
   });
+  it('private IPs only need to be unique within a VPC', () => {
+    const m = threeTier(); const other = baseVpc('other', '10.0.0.0/16', 'other');
+    m.vpcs.push(...other.vpcs); m.routeTables.push(...other.routeTables); m.securityGroups.push(...other.securityGroups);
+    m.subnets.push({ id: 'subnet-other', name: 'other', vpcId: 'vpc-other', cidr: '10.0.11.0/24', az: 'ap-northeast-1a' });
+    m.instances.push({ id: 'i-other', name: 'other', subnetId: 'subnet-other', privateIp: '10.0.11.10', securityGroupIds: ['sg-other-default'], role: 'generic', listening: [] });
+    expect(validateModel(m)).toEqual([]);
+  });
 });
 
 describe('Reachability analyzer', () => {
@@ -189,6 +196,19 @@ describe('Reachability analyzer', () => {
   it('a load balancer listener does not serve UDP', () => {
     const r = analyzePath(threeTier(), internet, { kind: 'lb', id: 'alb-web' }, 'udp', 443);
     expect(r.blocked).toMatchObject({ component: 'Load Balancer', detail: expect.stringContaining('UDP') });
+  });
+  it('an ICMP ping from inside the VPC to a load balancer is blocked by the LB (no crash, never reachable)', () => {
+    const m = threeTier();
+    m.securityGroups.find(s => s.id === 'sg-alb')!.ingress.push({ protocol: '-1', fromPort: 0, toPort: 65535, cidr: '0.0.0.0/0' });
+    for (const port of [0, 443]) expect(analyzePath(m, { kind: 'instance', id: 'i-app-a' }, { kind: 'lb', id: 'alb-web' }, 'icmp', port).blocked).toMatchObject({ component: 'Load Balancer', detail: expect.stringContaining('ICMP') });
+  });
+  it('a gateway endpoint of another VPC is not a usable route target', () => {
+    const m = threeTier(); const other = baseVpc('other', '10.9.0.0/16', 'other');
+    m.vpcs.push(...other.vpcs); m.routeTables.push(...other.routeTables);
+    m.endpoints.push({ id: 'vpce-other', name: 'other-s3', vpcId: 'vpc-other', service: 's3', type: 'Gateway', routeTableIds: [] });
+    m.routeTables.find(r => r.id === 'rtb-private')!.routes.push({ destination: 'pl-s3', target: 'vpce-other' });
+    expect(validateModel(m).join()).toContain('別のVPCのVPCエンドポイント');
+    expect(analyzePath(m, { kind: 'instance', id: 'i-app-a' }, { kind: 'service', service: 's3' }, 'tcp', 443).blocked?.component).toBe('VPC Endpoint');
   });
   it('broken references are validation errors and never crash the analyzer', () => {
     const m = threeTier();

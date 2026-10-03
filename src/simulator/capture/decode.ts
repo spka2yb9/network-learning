@@ -169,28 +169,34 @@ export function decodeFrame(input: ArrayLike<number>): Decoded {
         const hs = r.u8(o + 5);
         field(l, 'Handshake type', hs === 1 ? 'Client Hello (1)' : hs === 2 ? 'Server Hello (2)' : hs, o + 5, 1);
         if (hs === 1) {
-          const sni = findSni(o + 9, o + 5 + len);
+          const sni = findSni(o + 9, Math.min(end, o + 5 + len));
           if (sni) field(l, 'Server Name Indication', sni.name, sni.offset, sni.length);
           parts.push(`Client Hello${sni ? ` (SNI=${sni.name})` : ''}`);
         } else parts.push(hs === 2 ? 'Server Hello' : `Handshake ${hs}`);
       } else if (type === 23) { field(l, 'Encrypted Application Data', `${len} bytes`, o + 5, len); parts.push('Application Data'); }
       else if (type === 20) parts.push('Change Cipher Spec');
       else parts.push('Alert');
+      // A record longer than this segment continues in the next TCP segment.
+      if (o + 5 + len > end) parts[parts.length - 1] += ' [partial]';
       o += 5 + len;
     }
     s.protocol = 'TLS'; s.info = parts.join(', ');
   }
+  /** SNI within the captured bytes only (`end`): the SNI may be in a later segment. */
   function findSni(o: number, end: number) {
-    let p = o + 2 + 32;
-    p += 1 + r.u8(p);
-    p += 2 + r.u16(p);
-    p += 1 + r.u8(p);
-    const extEnd = Math.min(end, p + 2 + r.u16(p)); p += 2;
-    while (p + 4 <= extEnd) {
-      const t = r.u16(p); const len = r.u16(p + 2);
-      if (t === 0) { const n = r.u16(p + 7); return { name: r.text(p + 9, n), offset: p + 9, length: n }; }
-      p += 4 + len;
-    }
+    const b = new Reader(input, end);
+    try {
+      let p = o + 2 + 32;
+      p += 1 + b.u8(p);
+      p += 2 + b.u16(p);
+      p += 1 + b.u8(p);
+      const extEnd = Math.min(end, p + 2 + b.u16(p)); p += 2;
+      while (p + 4 <= extEnd) {
+        const t = b.u16(p); const len = b.u16(p + 2);
+        if (t === 0) { const n = b.u16(p + 7); return p + 9 + n <= end ? { name: b.text(p + 9, n), offset: p + 9, length: n } : undefined; }
+        p += 4 + len;
+      }
+    } catch (error) { if (!(error instanceof Truncated)) throw error; }
     return undefined;
   }
   function decodeDns(o: number, end: number) {

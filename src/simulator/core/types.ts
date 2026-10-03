@@ -5,7 +5,11 @@ export const forwardingKinds: readonly DeviceKind[] = ['router', 'l3switch', 'fi
 export const switchingKinds: readonly DeviceKind[] = ['switch', 'l3switch'];
 export const hostKinds: readonly DeviceKind[] = ['pc', 'server'];
 
-export type InterfaceKind = 'ethernet' | 'subinterface' | 'svi' | 'tunnel' | 'loopback';
+export type InterfaceKind = 'ethernet' | 'subinterface' | 'svi' | 'tunnel' | 'loopback' | 'port-channel';
+/** Link aggregation member mode: `on` = static (no negotiation), `active` / `passive` = LACP. */
+export type LagMode = 'on' | 'active' | 'passive';
+/** Hash inputs that pick a port-channel member for a frame. */
+export type LoadBalance = 'src-dst-mac' | 'src-dst-ip' | 'src-dst-mixed-ip-port';
 export interface Switchport {
   mode: 'access' | 'trunk';
   accessVlan: number;
@@ -38,6 +42,8 @@ export interface NetworkInterface {
   ospfCost?: number;
   tunnel?: TunnelConfig;
   description?: string;
+  /** Physical port bundled into the logical interface `po<group>`. */
+  channelGroup?: { group: number; mode: LagMode };
 }
 export type RouteKind = 'connected' | 'static' | 'ospf' | 'bgp';
 export interface Route {
@@ -137,6 +143,8 @@ export interface OspfConfig {
   networks: { prefix: string; area: number }[];
   passive: string[];
   defaultOriginate?: boolean;
+  /** Equal-cost paths installed per prefix (IOS default 4). 1 = single-path. */
+  maximumPaths?: number;
 }
 export interface BgpNeighbor {
   ip: string;
@@ -174,6 +182,8 @@ export interface DeviceState {
   ospf?: OspfConfig;
   bgp?: BgpConfig;
   prefixLists?: PrefixList[];
+  /** `port-channel load-balance` (default src-dst-mixed-ip-port). */
+  lagLoadBalance?: LoadBalance;
   // ---- Runtime state: never authoritative, cleared on restore ----
   arp: ArpEntry[];
   macTable?: MacEntry[];
@@ -185,7 +195,11 @@ export interface DeviceState {
   /** Interfaces whose line protocol is down (no cable, link down, peer port down). */
   lineDown?: string[];
   sockets?: SocketEntry[];
+  /** Port-channel state (members bundled / suspended / down). */
+  lagStatus?: Record<string, LagStatus>;
 }
+export interface LagMember { port: string; flag: 'P' | 's' | 'D'; reason: string; bandwidth: number; peer?: string }
+export interface LagStatus { group: number; protocol: 'LACP' | 'static'; up: boolean; members: LagMember[]; capacity: number }
 export interface Link {
   id: string;
   sourceDevice: string;
@@ -252,6 +266,7 @@ export type AppPayload =
 
 export type EventType = 'PACKET_CREATED' | 'ROUTE_LOOKUP' | 'ARP_LOOKUP' | 'ARP_REQUEST' | 'ARP_REPLY'
   | 'FRAME_SENT' | 'FRAME_RECEIVED' | 'FRAME_DISCARDED' | 'MAC_LEARNED' | 'MAC_LOOKUP' | 'STP_BLOCKED' | 'BROADCAST_STORM'
+  | 'LAG_HASH' | 'ECMP_HASH'
   | 'TTL_DECREMENTED' | 'NAT_TRANSLATED' | 'FIREWALL_ACCEPT' | 'FIREWALL_DROP'
   | 'TUNNEL_ENCAPSULATED' | 'TUNNEL_DECAPSULATED'
   | 'TCP_STATE' | 'TCP_RETRANSMIT' | 'SOCKET_LOOKUP' | 'DNS_QUERY' | 'DNS_RESPONSE' | 'DNS_CACHE' | 'TLS_HANDSHAKE' | 'APP_DATA'
@@ -276,7 +291,10 @@ export interface SimulationEvent {
   peer?: string;
   before?: string;
   after?: string;
+  /** LAG member / ECMP next-hop selection: why this frame or packet took this path. */
+  choice?: PathChoice;
 }
+export interface PathChoice { kind: 'lag' | 'ecmp'; candidates: string[]; chosen: number; input: string; hash: number }
 export interface CaptureSummary {
   source: string;
   destination: string;

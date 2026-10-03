@@ -34,7 +34,7 @@ function CaseRunner({ def }: { def: CaptureLab }) {
   return <div className="case-runner">
     <div className="case-tabs">{def.cases.map((x, i) => <button key={x.id} className={i === index ? 'active' : ''} onClick={() => setIndex(i)}>{lab.quizzes.get(`cap:${def.id}:${x.id}`)?.correct ? <Icon name="check" size={13}/> : null}{x.title}</button>)}</div>
     <div className="case-question"><p className="tiny muted">キャプチャの取り方: <code>{built.note}</code></p><strong>{c.question}</strong>
-      <div className="diagnosis-options">{c.options.map((o, i) => <button key={o} className={`quiz-option ${choice === i ? 'selected' : ''}`} onClick={() => setChoice(i)}><span>{String.fromCharCode(65 + i)}</span>{o}</button>)}</div>
+      <div className="diagnosis-options">{c.options.map((o, i) => <button key={o} aria-pressed={choice === i} className={`quiz-option ${choice === i ? 'selected' : ''}`} onClick={() => setChoice(i)}><span>{String.fromCharCode(65 + i)}</span>{o}</button>)}</div>
       <label className="evidence">{c.evidenceHint}<input aria-label="根拠のパケット番号" inputMode="numeric" value={evidence} onChange={e => setEvidence(e.target.value)} placeholder="No."/></label>
       <button className="button small" disabled={choice === undefined || !evidence} onClick={check}>判定する<Icon name="check" size={14}/></button>
       {saved && <p className={saved.correct ? 'success-text' : 'error-text'}>{saved.correct ? `正解。${c.explanation}` : '原因の選択か、根拠のパケット番号が正しくありません。表示フィルタで関係するプロトコルに絞り、各パケットの中身（階層表示）を見直してから、もう一度判定してください。'}</p>}

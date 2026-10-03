@@ -27,14 +27,16 @@ export function diagnose(snapshot: NetworkSnapshot, source: string, url: string)
     return [true, `${iface.id} は UP です`];
   });
   step('IP', 'IPアドレスが設定されているか', 'ip addr', () => iface.address ? [true, `${iface.id} ${iface.address}`] : [false, 'IPアドレスが設定されていません']);
+  // `ip route add 0.0.0.0/0 via …` (or the GUI) may hold the default route as a static route instead of the gateway field.
+  const gateway = d.gateway ?? d.routes.find(r => r.destination === '0.0.0.0/0' && r.nextHop)?.nextHop;
   step('Subnet', 'Default Gateway（LANの出口のルータ）は同じサブネットにあるか', 'ip route', () => {
-    if (!d.gateway) return [false, 'Default Gatewayが設定されていません'];
-    return contains(cidr(iface.address!).canonical, d.gateway) ? [true, `Gateway ${d.gateway} は ${cidr(iface.address!).canonical} の中にあります`] : [false, `Gateway ${d.gateway} が自分のサブネット ${cidr(iface.address!).canonical} の外にあります`];
+    if (!gateway) return [false, 'Default Gatewayが設定されていません'];
+    return contains(cidr(iface.address!).canonical, gateway) ? [true, `Gateway ${gateway} は ${cidr(iface.address!).canonical} の中にあります`] : [false, `Gateway ${gateway} が自分のサブネット ${cidr(iface.address!).canonical} の外にあります`];
   });
   step('ARP', 'GatewayのMACアドレスをARPで調べられるか', 'ping <gateway> → ip neigh', () => {
-    const r = n.ping(source, d.gateway!);
-    const reply = r.events.find(e => e.type === 'ARP_REPLY' && e.message.startsWith(d.gateway!));
-    return reply || r.success ? [true, reply?.message ?? 'ARPキャッシュに登録済みです'] : [false, `${d.gateway} からARPの応答がありません。スイッチ・VLAN・Gateway側のインターフェースを確認します`];
+    const r = n.ping(source, gateway!);
+    const reply = r.events.find(e => e.type === 'ARP_REPLY' && e.message.startsWith(gateway!));
+    return reply || r.success ? [true, reply?.message ?? 'ARPキャッシュに登録済みです'] : [false, `${gateway} からARPの応答がありません。スイッチ・VLAN・Gateway側のインターフェースを確認します`];
   });
   const resolver = d.dnsServers?.[0];
   const target = isIpv4(host) ? host : resolver;

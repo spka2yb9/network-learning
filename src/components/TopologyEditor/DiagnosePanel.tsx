@@ -10,7 +10,8 @@ export default function DiagnosePanel() {
   useUI(s => s.revision);
   const selected = useUI(s => s.selectedDevice);
   const hosts = lab.network.snapshot().devices.filter(d => hostKinds.includes(d.kind));
-  const [source, setSource] = useState(hosts.find(h => h.id === selected)?.id ?? hosts[0]?.id ?? '');
+  const [picked, setSource] = useState(hosts.find(h => h.id === selected)?.id ?? hosts[0]?.id ?? '');
+  const source = hosts.some(h => h.id === picked) ? picked : hosts[0]?.id ?? '';  // the picked host may have been deleted
   const [url, setUrl] = useState('https://www.example.com/');
   const [result, setResult] = useState<LayerCheck[]>();
   const locked = !!lab.lab && (lab.lab.kind === 'troubleshooting' || lab.lab.kind === 'capstone' || lab.lab.explain === false) && !lab.completed.has(`lab:${lab.labId}`);

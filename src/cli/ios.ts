@@ -1,7 +1,9 @@
-import type { Context } from './CliEngine';
-import { pad, ping, traceroute } from './common';
+import type { Context, Mode } from './CliEngine';
+import { pad, ping, speedText, traceroute } from './common';
 import { logicalMac } from '../simulator/core/NetworkSimulator';
-import { forwardingKinds, switchingKinds, type DeviceState, type NatRule, type NetworkInterface } from '../simulator/core/types';
+import { forwardingKinds, switchingKinds, type DeviceState, type LagMode, type LoadBalance, type NatRule, type NetworkInterface } from '../simulator/core/types';
+import { flowText } from '../simulator/core/flow';
+import { lag } from '../simulator/scenarios/build';
 import { cidr, contains, ipOf, ipv4, isIpv4 } from '../simulator/l3/ipv4';
 import { installedRoutes, l3Up, resolveRoute, routingTable } from '../simulator/l3/RoutingTable';
 import { formatVlanList, parseVlanList, validVlan } from '../simulator/l2/Vlan';
@@ -18,7 +20,7 @@ const num = (s: string | undefined, min: number, max: number, label: string) => 
   return n;
 };
 /** Cisco-style "network mask" or "network wildcard" → CIDR. */
-function toCidr(address: string | undefined, mask?: string, wildcard = false) {
+export function toCidr(address: string | undefined, mask?: string, wildcard = false) {
   if (!address) throw new Error('ネットワークを CIDR（例: 10.0.0.0/24）で指定してください');
   if (address.includes('/')) return cidr(address).canonical;
   if (!mask) throw new Error('CIDR（例: 10.0.0.0/24）で指定してください');
@@ -28,9 +30,28 @@ function toCidr(address: string | undefined, mask?: string, wildcard = false) {
   return cidr(`${address}/${prefix}`).canonical;
 }
 const ifaceName = (d: DeviceState, name: string) => {
-  const n = name.toLowerCase().replace(/^gigabitethernet/, 'g').replace(/^gi(?=\d)/, 'g').replace(/^lo(?:opback)?(\d+)$/, 'lo$1').replace(/^tu(?:nnel)?(\d+)$/, 'tunnel$1').replace(/^vl(?:an)?(\d+)$/, 'vlan$1');
+  const n = name.toLowerCase().replace(/^gigabitethernet/, 'g').replace(/^gi(?=\d)/, 'g').replace(/^lo(?:opback)?(\d+)$/, 'lo$1').replace(/^tu(?:nnel)?(\d+)$/, 'tunnel$1').replace(/^vl(?:an)?(\d+)$/, 'vlan$1').replace(/^po(?:rt-?channel)?(\d+)$/, 'po$1');
   return d.interfaces.find(i => i.id.toLowerCase() === n)?.id ?? n;
 };
+/** `ip route` arguments after the prefix: `<next-hop>` | `<IF> [next-hop]`, then [distance]. */
+const routeVia = (d: DeviceState, rest: string[]) => {
+  const viaIf = rest[0] && !isIpv4(rest[0]) ? ifaceName(d, rest[0]) : undefined;
+  return { viaIf, nextHop: viaIf ? (rest[1] && isIpv4(rest[1]) ? rest[1] : undefined) : rest[0] };
+};
+// IOS-style abbreviations: per mode, the keyword paths the parser knows. A unique prefix of a keyword stands for it (sh ip int b, int g0/0, no shut); expansion stops at the first value.
+type Words = { [k: string]: Words };
+const words = (paths: string) => { const root: Words = {}; for (const p of paths.split(',')) p.trim().split(' ').reduce((n, k) => (n[k] ??= {}), root); return root; };
+const expand = (t: string[], node: Words): string[] => {
+  const [x, ...rest] = t; const keys = Object.keys(node);
+  const m = !x ? [] : keys.includes(x) ? [x] : keys.filter(k => k.startsWith(x));
+  return m.length === 1 ? [m[0], ...expand(rest, node[m[0]])] : t;
+};
+const EXEC = words('enable,disable,exit,end,configure terminal,write memory,copy running-config startup-config,ping,traceroute,clear arp,clear arp-cache,clear ip arp,clear ip nat translation,clear ip bgp,clear mac address-table,clear mac-address-table,clear conntrack,'
+  + ['interfaces trunk', 'ip interface brief', 'ip route static', 'ip route connected', 'ip route ospf', 'ip route bgp', 'ip arp', 'ip cef exact-route', 'ip nat translations', 'ip access-lists', 'ip ospf neighbor', 'ip ospf database', 'ip bgp summary', 'arp', 'running-config', 'startup-config', 'mac address-table', 'mac-address-table', 'vlan brief', 'spanning-tree', 'etherchannel summary', 'etherchannel load-balance', 'access-lists', 'crypto session', 'crypto ipsec sa', 'crypto isakmp sa', 'firewall', 'conntrack', 'logging', 'clock'].map(x => `show ${x}`).join(','));
+const conf = (sub: string) => { const ps = `interface range,port-channel load-balance,hostname,ip route,ip default-gateway,ip nat inside source static,ip routing,ip access-list extended,ip prefix-list,vlan,spanning-tree priority,spanning-tree vlan,router ospf,router bgp,firewall mode stateful,firewall mode stateless,firewall default permit,firewall default deny,firewall rule,clear conntrack,exit,end${sub ? `,${sub}` : ''}`; return words(`${ps},${ps.split(',').map(p => `no ${p}`).join(',')}`); };
+const VOCAB: Record<Mode, Words> = { user: EXEC, privileged: EXEC, config: conf(''), vlan: conf('name'), acl: conf('permit,deny,reject,remark'), 'router-bgp': conf('neighbor,network,bgp router-id'),
+  'router-ospf': conf('network,passive-interface,router-id,default-information originate,maximum-paths'),
+  interface: conf('ip address,ip nat inside,ip nat outside,ip access-group,ip ospf cost,shutdown,description,encapsulation dot1q,channel-group,speed,switchport mode access,switchport mode trunk,switchport access vlan,switchport trunk native vlan,switchport trunk allowed vlan add,switchport trunk allowed vlan remove,switchport trunk allowed vlan none,spanning-tree cost,spanning-tree portfast,tunnel source,tunnel destination,tunnel mode ipsec,tunnel mode gre,tunnel protection psk,tunnel protection proposal') };
 
 // ---------------------------------------------------------------- show
 function lineProtocol(ctx: Context, i: NetworkInterface) {
@@ -39,6 +60,7 @@ function lineProtocol(ctx: Context, i: NetworkInterface) {
   if (i.kind === 'loopback') return 'up';
   if (i.kind === 'tunnel') return d.tunnelStatus?.[i.id]?.up ? 'up' : 'down';
   if (i.kind === 'svi') return d.lineDown?.includes(i.id) ? 'down' : 'up';
+  if (i.kind === 'port-channel' || i.parent?.startsWith('po')) return d.lagStatus?.[i.parent ?? i.id]?.up ? 'up' : 'down';
   const port = i.parent ?? i.id;
   const link = ctx.network.snapshot().links.find(l => (l.sourceDevice === ctx.id && l.sourceInterface === port) || (l.targetDevice === ctx.id && l.targetInterface === port));
   if (!link || !link.up) return 'down';
@@ -50,10 +72,19 @@ function showInterfaces(ctx: Context, only?: string) {
   if (!list.length) throw new Error(`インターフェース ${only} がありません（show ip interface brief で名前を確認できます）`);
   return list.map(i => {
     const status = i.up ? 'up' : 'administratively down';
-    const lines = [`${i.id} is ${status}, line protocol is ${lineProtocol(ctx, i)}`, `  Hardware address is ${i.mac}${i.description ? `\n  Description: ${i.description}` : ''}`];
+    const member = i.channelGroup && ctx.device.lagStatus?.[`po${i.channelGroup.group}`]?.members.find(m => m.port === i.id);
+    const lag = i.kind === 'port-channel' ? ctx.device.lagStatus?.[i.id] : undefined;
+    const lines = [`${i.id} is ${status}, line protocol is ${lineProtocol(ctx, i)}${member?.flag === 's' ? ' (suspended)' : ''}`, `  Hardware ${lag ? 'is EtherChannel, address' : 'address'} is ${i.mac}${i.description ? `\n  Description: ${i.description}` : ''}`];
+    const link = (i.kind ?? 'ethernet') === 'ethernet' && ctx.network.snapshot().links.find(l => (l.sourceDevice === ctx.id && l.sourceInterface === i.id) || (l.targetDevice === ctx.id && l.targetInterface === i.id));
+    if (link) lines.push(`  BW ${link.bandwidth * 1000} Kbit/sec（リンク速度 ${speedText(link.bandwidth)}）`);
+    if (lag) {
+      const used = lag.members.filter(m => m.flag === 'P');
+      lines.push(`  BW ${lag.capacity * 1000} Kbit/sec（使用中のメンバー ${used.length}本の合計 ${speedText(lag.capacity)}。1つのフローは、このうち1本だけを使います）`, `  Members in this channel: ${used.map(m => m.port).join(' ') || 'なし'}${lag.members.length > used.length ? `（使用していないメンバー: ${lag.members.filter(m => m.flag !== 'P').map(m => `${m.port}(${m.flag})`).join(' ')}）` : ''}`, `  Protocol: ${lag.protocol}`);
+    }
+    if (i.channelGroup) lines.push(`  Member of po${i.channelGroup.group}（mode ${i.channelGroup.mode}）: ${member?.flag === 'P' ? 'bundled' : member?.flag === 's' ? 'suspended' : 'down'} — ${member?.reason ?? ''}`);
     if (i.address) lines.push(`  Internet address is ${i.address}`);
-    if (i.switchport) lines.push(`  Switchport: mode ${i.switchport.mode}, ${i.switchport.mode === 'access' ? `access VLAN ${i.switchport.accessVlan}` : `native VLAN ${i.switchport.nativeVlan}, allowed ${formatVlanList(i.switchport.allowedVlans)}`}`);
-    if (i.kind === 'subinterface') lines.push(`  Encapsulation 802.1Q Virtual LAN, Vlan ID ${i.vlan}`);
+    if (i.switchport && !i.channelGroup) lines.push(`  Switchport: mode ${i.switchport.mode}, ${i.switchport.mode === 'access' ? `access VLAN ${i.switchport.accessVlan}` : `native VLAN ${i.switchport.nativeVlan}, allowed ${formatVlanList(i.switchport.allowedVlans)}`}`);
+    if (i.kind === 'subinterface') lines.push(`  Encapsulation 802.1Q Virtual LAN, Vlan ID ${i.vlan ?? '未設定（encapsulation dot1q <VLAN> で設定）'}`);
     if (i.kind === 'tunnel') {
       const t = i.tunnel; const s = ctx.device.tunnelStatus?.[i.id];
       lines.push(`  Tunnel source ${t?.source ?? 'unset'}, destination ${t?.destination ?? 'unset'}`, `  Tunnel protocol/transport ${t?.mode === 'ipsec' ? 'IPSEC/IP' : 'GRE/IP'}`, `  Tunnel state: ${s?.up ? 'UP' : 'DOWN'} — ${s?.reason ?? ''}`);
@@ -72,25 +103,36 @@ function showIpRoute(ctx: Context, filter?: string) {
   const d = ctx.device;
   if (filter && isIpv4(filter)) {
     const candidates = routingTable(d).filter(r => contains(r.destination, filter)).sort((a, b) => cidr(b.destination).prefix - cidr(a.destination).prefix || a.preference - b.preference);
-    const best = resolveRoute(d, filter)?.route;
+    const resolved = resolveRoute(d, filter); const best = resolved?.route;
     if (!best) return `% Network not in table（${filter} に一致する経路がありません。Default Route もありません）`;
-    return [`Routing entry for ${best.destination}`, `  Known via "${best.kind}", distance ${best.preference}, metric ${best.metric}`, `  ${best.nextHop ? `* ${best.nextHop}` : `* directly connected, via ${best.interfaceId}`}`,
+    const blocks = resolved.ecmp?.paths ?? [resolved];
+    return [`Routing entry for ${best.destination}`, `  Known via "${best.kind}", distance ${best.preference}, metric ${best.metric}`, '  Routing Descriptor Blocks:',
+      ...blocks.map((b, i) => `  ${i === 0 ? '*' : ' '} ${b.route.nextHop ? `${b.nextHop}, via ${b.iface.id}` : `directly connected, via ${b.iface.id}`}`),
+      ...(blocks.length > 1 ? [`  （ECMP: 等コストのNext Hopが${blocks.length}本。どれを使うかはパケットのフロー（送信元/宛先IP・プロトコル・ポート）のハッシュで決まります。show ip cef exact-route <送信元> <宛先> で確かめられます）`] : []),
       '', `最長一致の候補（${filter} を含む経路）:`, ...candidates.map(r => `  ${r === best ? '→' : ' '} ${pad(r.destination, 18)} /${cidr(r.destination).prefix}  ${r.kind} [${r.preference}/${r.metric}] ${r.nextHop ? `via ${r.nextHop}` : r.interfaceId}`)].join('\n');
   }
-  const routes = installedRoutes(d).filter(r => !filter || r.kind === filter).sort((a, b) => cidr(a.destination).network - cidr(b.destination).network || cidr(a.destination).prefix - cidr(b.destination).prefix);
-  const dflt = routes.find(r => r.destination === ANY);
+  if (filter && !['static', 'connected', 'ospf', 'bgp'].includes(filter)) throw new Error(`show ip route [<IP>|static|connected|ospf|bgp]（${filter} は指定できません）`);
+  const all = installedRoutes(d);
+  const routes = all.filter(r => !filter || r.kind === filter).sort((a, b) => cidr(a.destination).network - cidr(b.destination).network || cidr(a.destination).prefix - cidr(b.destination).prefix);
+  const dflt = all.find(r => r.destination === ANY);
   return ['Codes: C - connected, S - static, O - OSPF, B - BGP, * - candidate default', '',
     dflt ? `Gateway of last resort is ${dflt.nextHop ?? dflt.interfaceId} to network 0.0.0.0` : 'Gateway of last resort is not set', '',
-    ...routes.map(r => `${pad(code(r), 5)} ${pad(r.destination, 18)} ${r.kind === 'connected' ? `is directly connected, ${r.interfaceId}` : `[${r.preference}/${r.metric}] via ${r.nextHop ?? r.interfaceId}${r.info ? `  (${r.info})` : ''}`}`)].join('\n');
+    // Equal-cost paths of one prefix are listed under it, like IOS: the prefix once, then one line per next hop.
+    ...routes.map((r, i) => {
+      const via = `[${r.preference}/${r.metric}] via ${r.nextHop ?? r.interfaceId}${r.nextHop && r.interfaceId ? `, ${r.interfaceId}` : ''}`;
+      if (i > 0 && routes[i - 1].destination === r.destination && r.kind !== 'connected') return `${' '.repeat(25)}${via}`;
+      return `${pad(code(r), 5)} ${pad(r.destination, 18)} ${r.kind === 'connected' ? `is directly connected, ${r.interfaceId}` : `${via}${r.info ? `  (${r.info})` : ''}`}`;
+    }),
+    ...(routes.some((r, i) => i > 0 && routes[i - 1].destination === r.destination) ? ['', '（同じ宛先に複数の行があるのは ECMP: 等コストの経路を同時に使っています）'] : [])].join('\n');
 }
 function showVlan(ctx: Context) {
   const d = ctx.device;
   const all = [{ id: 1, name: 'default' }, ...(d.vlans ?? [])];
   return ['VLAN Name                             Status    Ports', '---- -------------------------------- --------- -------------------------------',
-    ...all.map(v => `${pad(v.id, 4)} ${pad(v.name, 32)} active    ${d.interfaces.filter(i => i.switchport?.mode === 'access' && i.switchport.accessVlan === v.id).map(i => i.id).join(', ')}`)].join('\n');
+    ...all.map(v => `${pad(v.id, 4)} ${pad(v.name, 32)} active    ${d.interfaces.filter(i => !i.channelGroup && i.switchport?.mode === 'access' && i.switchport.accessVlan === v.id).map(i => i.id).join(', ')}`)].join('\n');
 }
 function showTrunk(ctx: Context) {
-  const trunks = ctx.device.interfaces.filter(i => i.switchport?.mode === 'trunk');
+  const trunks = ctx.device.interfaces.filter(i => i.switchport?.mode === 'trunk' && !i.channelGroup);
   if (!trunks.length) return 'トランクポートはありません';
   const active = [1, ...(ctx.device.vlans ?? []).map(v => v.id)];
   return ['Port        Mode         Encapsulation  Status        Native vlan', ...trunks.map(i => `${pad(i.id, 11)} on           802.1q         ${pad(lineProtocol(ctx, i) === 'up' ? 'trunking' : 'not-connect', 13)} ${i.switchport!.nativeVlan}`),
@@ -104,6 +146,29 @@ function showStp(ctx: Context) {
   const rows = ctx.device.interfaces.filter(i => stp.ports.has(portKey(ctx.id, i.id)));
   return [`Spanning tree enabled protocol ieee（教育用: 単一インスタンス・安定状態のみ）`, `  Root ID    ${b.rootId}`, b.isRoot ? '             This bridge is the root' : `             Cost ${b.rootCost}, Port ${b.rootPort}`, `  Bridge ID  ${b.bridgeId}`, '',
     'Interface        Role Sts Cost', '---------------- ---- --- ---------', ...rows.map(i => { const p = stp.ports.get(portKey(ctx.id, i.id))!; return `${pad(i.id, 16)} ${pad({ root: 'Root', designated: 'Desg', alternate: 'Altn', disabled: 'Disa' }[p.role], 4)} ${p.forwarding ? 'FWD' : 'BLK'} ${p.cost}`; })].join('\n');
+}
+function showEtherchannel(ctx: Context, what?: string) {
+  const d = ctx.device;
+  if (what === 'load-balance') return `EtherChannel Load-Balancing Configuration:\n        ${d.lagLoadBalance ?? 'src-dst-mixed-ip-port'}\n（ハッシュに使う値: ${({ 'src-dst-mac': '送信元/宛先MACアドレス', 'src-dst-ip': '送信元/宛先IPアドレス', 'src-dst-mixed-ip-port': '送信元/宛先IPアドレスとTCP/UDPポート' } as Record<LoadBalance, string>)[d.lagLoadBalance ?? 'src-dst-mixed-ip-port']}）`;
+  if (what && what !== 'summary') throw new Error('show etherchannel summary / show etherchannel load-balance');
+  const lags = Object.entries(d.lagStatus ?? {});
+  if (!lags.length) return 'Port-channel はありません（interface <IF> → channel-group <番号> mode active で作成します）';
+  return ['Flags:  D - down        P - bundled in port-channel', '        s - suspended   S - Layer2   R - Layer3   U - in use', `Number of channel-groups in use: ${lags.length}`, '',
+    'Group  Port-channel  Protocol    Ports', '------+-------------+-----------+-----------------------------------------------',
+    ...lags.map(([id, l]) => `${pad(l.group, 6)} ${pad(`${id}(${d.interfaces.find(i => i.id === id)?.switchport ? 'S' : 'R'}${l.up ? 'U' : 'D'})`, 13)} ${pad(l.protocol, 11)} ${l.members.map(m => pad(`${m.port}(${m.flag})`, 11)).join(' ')}`),
+    ...lags.flatMap(([id, l]) => l.members.filter(m => m.flag !== 'P').map(m => `  ${m.port}（${id}）: ${m.flag === 's' ? 'suspended' : 'down'} — ${m.reason}`))].join('\n');
+}
+/** `show ip cef exact-route <src> <dst> [tcp|udp <sport> <dport>]`: which ECMP path this flow's hash picks. */
+function exactRoute(ctx: Context, t: string[]) {
+  const [src, dst, proto, sport, dport] = t;
+  if (!src || !dst || !isIpv4(src) || !isIpv4(dst)) throw new Error('使い方: show ip cef exact-route <送信元IP> <宛先IP> [tcp|udp <送信元ポート> <宛先ポート>]');
+  const p = proto?.toUpperCase();
+  if (p && p !== 'TCP' && p !== 'UDP') throw new Error('プロトコルは tcp / udp です（省略すると ICMP などポートのない通信として計算します）');
+  const flow = { protocol: (p ?? 'ICMP') as 'TCP' | 'UDP' | 'ICMP', source: src, destination: dst, sourcePort: p ? num(sport, 1, 65535, '送信元ポート') : 0, destinationPort: p ? num(dport, 1, 65535, '宛先ポート') : 0 };
+  const r = resolveRoute(ctx.device, dst, { flow });
+  if (!r) return `${src} -> ${dst} => no route`;
+  return [`${src} -> ${dst} =>IP adj out of ${r.iface.id}, addr ${r.nextHop}`,
+    r.ecmp ? `（ECMP: ${r.ecmp.choice.candidates.join(' / ')} のうち、フロー「${flowText(flow)}」のハッシュ ${r.ecmp.choice.hash} mod ${r.ecmp.paths.length} = ${r.ecmp.choice.chosen} → ${r.ecmp.choice.chosen + 1}本目）` : '（等コストの経路は1本だけです）'].join('\n');
 }
 function showBgp(ctx: Context, arg?: string) {
   const b = ctx.network.bgp();
@@ -126,6 +191,7 @@ function showLogging(ctx: Context) {
   for (const i of o?.issues.filter(x => x.device === ctx.id) ?? []) logs.push(`%OSPF-4-ERRRCV: ${i.message}`);
   for (const s of ctx.network.bgp()?.sessions.filter(x => x.device === ctx.id && x.state !== 'Established') ?? []) logs.push(`%BGP-3-NOTIFICATION: neighbor ${s.neighbor} ${s.state}: ${s.reason}`);
   for (const [id, s] of Object.entries(ctx.device.tunnelStatus ?? {})) if (!s.up) logs.push(`%CRYPTO-4-TUNNEL: ${id} down: ${s.reason}`);
+  for (const [id, l] of Object.entries(ctx.device.lagStatus ?? {})) for (const m of l.members.filter(x => x.flag === 's')) logs.push(`%EC-5-${m.reason.includes('速度') ? 'CANNOT_BUNDLE2' : 'L3DONTBNDL2'}: ${m.port} suspended（${id}）: ${m.reason}`);
   for (const i of ctx.device.interfaces) if (i.up && (i.kind ?? 'ethernet') === 'ethernet' && lineProtocol(ctx, i) === 'down' && ctx.network.snapshot().links.some(l => (l.sourceDevice === ctx.id && l.sourceInterface === i.id) || (l.targetDevice === ctx.id && l.targetInterface === i.id))) logs.push(`%LINEPROTO-5-UPDOWN: Line protocol on Interface ${i.id}, changed state to down`);
   return logs.length ? logs.join('\n') : 'ログはありません（教育用: 設定の不整合があるとここに表示されます）';
 }
@@ -133,14 +199,16 @@ export function runningConfig(d: DeviceState) {
   const out = [`hostname ${d.id}`, '!'];
   for (const v of d.vlans ?? []) out.push(`vlan ${v.id}`, ` name ${v.name}`, '!');
   if (d.stp && !d.stp.enabled) out.push('no spanning-tree', '!'); else if (d.stp && d.stp.priority !== 32768) out.push(`spanning-tree priority ${d.stp.priority}`, '!');
+  if (d.lagLoadBalance) out.push(`port-channel load-balance ${d.lagLoadBalance}`, '!');
   for (const i of d.interfaces) {
     out.push(`interface ${i.id}`);
     if (i.description) out.push(` description ${i.description}`);
-    if (i.kind === 'subinterface') out.push(` encapsulation dot1q ${i.vlan}`);
+    if (i.kind === 'subinterface' && i.vlan !== undefined) out.push(` encapsulation dot1q ${i.vlan}`);
+    if (i.channelGroup) out.push(` channel-group ${i.channelGroup.group} mode ${i.channelGroup.mode}`);
     if (i.switchport) {
       if (i.switchport.mode === 'access') out.push(` switchport mode access`, ` switchport access vlan ${i.switchport.accessVlan}`);
       else out.push(' switchport mode trunk', ...(i.switchport.allowedVlans !== 'all' ? [` switchport trunk allowed vlan ${formatVlanList(i.switchport.allowedVlans)}`] : []), ...(i.switchport.nativeVlan !== 1 ? [` switchport trunk native vlan ${i.switchport.nativeVlan}`] : []));
-    } else if (switchingKinds.includes(d.kind) && (i.kind ?? 'ethernet') === 'ethernet') out.push(' no switchport');
+    } else if (switchingKinds.includes(d.kind) && ((i.kind ?? 'ethernet') === 'ethernet' || i.kind === 'port-channel')) out.push(' no switchport');
     if (i.address) out.push(` ip address ${i.address}`);
     if (i.tunnel) out.push(` tunnel source ${i.tunnel.source}`, ` tunnel destination ${i.tunnel.destination}`, ` tunnel mode ${i.tunnel.mode === 'ipsec' ? 'ipsec ipv4' : 'gre ip'}`, ...(i.tunnel.psk ? [` tunnel protection psk ${i.tunnel.psk}`] : []), ...(i.tunnel.proposal ? [` tunnel protection proposal ${i.tunnel.proposal}`] : []));
     if (i.nat) out.push(` ip nat ${i.nat}`);
@@ -150,7 +218,7 @@ export function runningConfig(d: DeviceState) {
     if (i.stpCost) out.push(` spanning-tree cost ${i.stpCost}`);
     out.push(i.up ? ' no shutdown' : ' shutdown', '!');
   }
-  if (d.ospf) out.push(`router ospf ${d.ospf.processId}`, ...(d.ospf.routerId ? [` router-id ${d.ospf.routerId}`] : []), ...d.ospf.networks.map(n => ` network ${n.prefix} area ${n.area}`), ...d.ospf.passive.map(p => ` passive-interface ${p}`), ...(d.ospf.defaultOriginate ? [' default-information originate'] : []), '!');
+  if (d.ospf) out.push(`router ospf ${d.ospf.processId}`, ...(d.ospf.routerId ? [` router-id ${d.ospf.routerId}`] : []), ...d.ospf.networks.map(n => ` network ${n.prefix} area ${n.area}`), ...d.ospf.passive.map(p => ` passive-interface ${p}`), ...(d.ospf.defaultOriginate ? [' default-information originate'] : []), ...(d.ospf.maximumPaths ? [` maximum-paths ${d.ospf.maximumPaths}`] : []), '!');
   if (d.bgp) out.push(`router bgp ${d.bgp.asn}`, ...(d.bgp.routerId ? [` bgp router-id ${d.bgp.routerId}`] : []), ...d.bgp.neighbors.flatMap(n => [` neighbor ${n.ip} remote-as ${n.remoteAs}`,
     ...(n.updateSource ? [` neighbor ${n.ip} update-source ${n.updateSource}`] : []), ...(n.nextHopSelf ? [` neighbor ${n.ip} next-hop-self`] : []), ...(n.shutdown ? [` neighbor ${n.ip} shutdown`] : []),
     ...(n.prefixListIn ? [` neighbor ${n.ip} prefix-list ${n.prefixListIn} in`] : []), ...(n.prefixListOut ? [` neighbor ${n.ip} prefix-list ${n.prefixListOut} out`] : []),
@@ -161,7 +229,7 @@ export function runningConfig(d: DeviceState) {
   for (const r of d.nat ?? []) out.push(natRuleText(r));
   if (d.firewall) out.push(`firewall mode ${d.firewall.stateful ? 'stateful' : 'stateless'}`, `firewall default ${d.firewall.defaultAction}`, ...d.firewall.rules.map(r => `firewall rule ${formatRule(r)}`));
   if (d.gateway) out.push(`ip default-gateway ${d.gateway}`);
-  for (const r of d.routes) out.push(`ip route ${r.destination} ${r.nextHop ?? ''} ${r.nextHop && r.interfaceId ? r.interfaceId : r.interfaceId ?? ''}${r.preference !== 1 ? ` ${r.preference}` : ''}`.replace(/\s+/g, ' ').trim());
+  for (const r of d.routes) out.push(`ip route ${r.destination} ${r.interfaceId ?? ''} ${r.nextHop ?? ''}${r.preference !== 1 ? ` ${r.preference}` : ''}`.replace(/\s+/g, ' ').trim());
   return [...out, 'end'].join('\n');
 }
 function show(ctx: Context, t: string[]): string {
@@ -170,6 +238,8 @@ function show(ctx: Context, t: string[]): string {
   if (t[0] === 'interfaces' && t[1] === 'trunk') return showTrunk(ctx);
   if (t[0] === 'interfaces' || t[0] === 'interface' || (t[0] === 'ip' && t[1] === 'interface')) return showInterfaces(ctx, t[0] === 'ip' ? (t[2] && ifaceName(d, t[2])) : t[1] && ifaceName(d, t[1]));
   if (t[0] === 'ip' && t[1] === 'route') return showIpRoute(ctx, t[2]);
+  if (t[0] === 'ip' && t[1] === 'cef' && t[2] === 'exact-route') return exactRoute(ctx, t.slice(3));
+  if (t[0] === 'etherchannel') return showEtherchannel(ctx, t[1]);
   if (s === 'arp' || s === 'ip arp') return ['Protocol  Address          Age  Hardware Addr      Interface', ...d.interfaces.filter(i => i.address && l3Up(d, i)).map(i => `Internet  ${pad(ipOf(i.address)!, 16)} -    ${pad(i.mac, 18)} ${i.id}`),
     ...d.arp.map(a => `Internet  ${pad(a.ip, 16)} ${pad(Math.floor((120_000 - (a.expiresAt - ctx.network.now())) / 60_000), 4)} ${pad(a.mac, 18)} ${a.interfaceId}`)].join('\n');
   if (s.startsWith('mac address-table') || s.startsWith('mac-address-table')) {
@@ -223,6 +293,12 @@ function createInterface(d: DeviceState, name: string): NetworkInterface {
     const i: NetworkInterface = { id: name, kind: 'svi', vlan, mac: logicalMac(d, 0x10, vlan), up: true };
     d.interfaces.push(i); return i;
   }
+  if ((m = /^po(\d+)$/.exec(name))) {
+    if (!switchingKinds.includes(d.kind) && !forwardingKinds.includes(d.kind)) throw new Error('Port-channel はスイッチ・ルータで使用します');
+    const group = Number(m[1]); if (group < 1 || group > 64) throw new Error('Port-channel の番号は1〜64です');
+    const i: NetworkInterface = { id: name, kind: 'port-channel', mac: logicalMac(d, 0x40, group), up: true, ...(switchingKinds.includes(d.kind) ? { switchport: { mode: 'access', accessVlan: 1, allowedVlans: 'all', nativeVlan: 1 } } : {}) };
+    d.interfaces.push(i); return i;
+  }
   if ((m = /^lo(\d+)$/.exec(name))) { const i: NetworkInterface = { id: name, kind: 'loopback', mac: logicalMac(d, 0x20, Number(m[1])), up: true }; d.interfaces.push(i); return i; }
   if ((m = /^tunnel(\d+)$/.exec(name))) {
     if (!forwardingKinds.includes(d.kind)) throw new Error('トンネルはルータで使用します');
@@ -240,10 +316,33 @@ function interfaceCommand(ctx: Context, t: string[]): string {
   if (s === 'no shutdown') return set(i => { i.up = true; });
   if (t[0] === 'description') return set(i => { i.description = t.slice(1).join(' '); });
   if (t[0] === 'encapsulation' && t[1]?.toLowerCase() === 'dot1q') return set(i => { if (i.kind !== 'subinterface') throw new Error('encapsulation dot1q はサブインターフェースで設定します（例: interface g0/0.10 → encapsulation dot1q 10）'); i.vlan = num(t[2], 1, 4094, 'VLAN ID'); });
+  if (t[0] === 'channel-group' && t[2] === 'mode' && ['active', 'passive', 'on'].includes(t[3])) {
+    const group = num(t[1], 1, 64, 'channel-group の番号');
+    const created = !ctx.network.device(id).interfaces.some(i => i.id === `po${group}`);
+    set((i, d) => {
+      if ((i.kind ?? 'ethernet') !== 'ethernet' || (!switchingKinds.includes(d.kind) && !forwardingKinds.includes(d.kind))) throw new Error('channel-group はスイッチ・ルータの物理ポートで設定します');
+      lag(d, group, t[3] as LagMode, i.id);
+    });
+    return created ? `Creating a port-channel interface po${group}` : '';
+  }
+  if (t[0] === 'channel-group') throw new Error('使い方: channel-group <番号> mode active|passive|on（active / passive はLACP、on はネゴシエーションなしの static）');
+  if (s === 'no channel-group') return set(i => { delete i.channelGroup; });
+  if (t[0] === 'speed') {
+    const speeds = [10, 100, 1000, 2500, 5000, 10000, 25000, 40000, 50000, 100000, 400000];
+    const mbps = Number(t[1]);
+    if (!speeds.includes(mbps)) throw new Error(`speed <Mbps>（${speeds.join(' / ')}）`);
+    const link = network.snapshot().links.find(l => (l.sourceDevice === id && l.sourceInterface === port) || (l.targetDevice === id && l.targetInterface === port));
+    if (!link) throw new Error(`${port} にはケーブルが接続されていません`);
+    network.setLinkProperties(link.id, { bandwidth: mbps, latency: link.latency });
+    return `（教育用: このシミュレータでは速度をリンク（ケーブル）が持つため、${link.sourceDevice === id ? link.targetDevice : link.sourceDevice} 側も ${speedText(mbps)} になります。実機では両端のポート・モジュール・ケーブルが対応している必要があります）`;
+  }
   if (t[0] === 'switchport' || s === 'no switchport') {
     return set((i, d) => {
-      if (!switchingKinds.includes(d.kind) || (i.kind ?? 'ethernet') !== 'ethernet') throw new Error('switchport はスイッチの物理ポートで設定します');
-      if (s === 'no switchport') { if (d.kind !== 'l3switch') throw new Error('no switchport（ルーテッドポート）はL3スイッチのみです'); delete i.switchport; return; }
+      if (!switchingKinds.includes(d.kind) || ((i.kind ?? 'ethernet') !== 'ethernet' && i.kind !== 'port-channel')) throw new Error('switchport はスイッチの物理ポート・Port-channel で設定します');
+      if (i.channelGroup) throw new Error(`${i.id} は po${i.channelGroup.group} のメンバーです。L2の設定は interface po${i.channelGroup.group} で行います（メンバーにも反映されます）`);
+      const members = d.interfaces.filter(x => i.kind === 'port-channel' && x.channelGroup?.group === Number(i.id.slice(2)));
+      const sync = () => { for (const m of members) { if (i.switchport) m.switchport = structuredClone(i.switchport); else delete m.switchport; } };
+      if (s === 'no switchport') { if (d.kind !== 'l3switch') throw new Error('no switchport（ルーテッドポート）はL3スイッチのみです'); delete i.switchport; sync(); return; }
       const sp = i.switchport ??= { mode: 'access', accessVlan: 1, allowedVlans: 'all', nativeVlan: 1 };
       if (t.length === 1) return;
       if (t[1] === 'mode' && (t[2] === 'access' || t[2] === 'trunk')) sp.mode = t[2];
@@ -258,6 +357,7 @@ function interfaceCommand(ctx: Context, t: string[]): string {
         } else if (t[4] === 'none') sp.allowedVlans = [];
         else sp.allowedVlans = parseVlanList(t[4] ?? '');
       } else throw new Error('使い方: switchport mode access|trunk / switchport access vlan <ID> / switchport trunk allowed vlan ... / switchport trunk native vlan <ID>');
+      sync();
     });
   }
   if (s === 'ip nat inside' || s === 'ip nat outside') return set(i => { i.nat = t[2] as 'inside' | 'outside'; });
@@ -267,6 +367,8 @@ function interfaceCommand(ctx: Context, t: string[]): string {
   if (t[0] === 'ip' && t[1] === 'ospf' && t[2] === 'cost') return set(i => { i.ospfCost = num(t[3], 1, 65535, 'OSPFコスト'); });
   if (s === 'no ip ospf cost') return set(i => { delete i.ospfCost; });
   if (t[0] === 'spanning-tree' && t[1] === 'cost') return set(i => { i.stpCost = num(t[2], 1, 200_000_000, 'STPコスト'); });
+  if (t[0] === 'no' && t[1] === 'spanning-tree' && t[2] === 'cost') return set(i => { delete i.stpCost; });
+  if (t[t[0] === 'no' ? 1 : 0] === 'spanning-tree' && t[t[0] === 'no' ? 2 : 1] === 'portfast') return '（教育用: portfast は再現しません。このシミュレータのSTPは収束後の状態だけを計算するため、設定しなくても結果は同じです）';
   if (t[0] === 'tunnel') {
     return set((i, d) => {
       if (i.kind !== 'tunnel') throw new Error('tunnel コマンドはトンネルインターフェースで設定します（例: interface tunnel1）');
@@ -280,7 +382,7 @@ function interfaceCommand(ctx: Context, t: string[]): string {
       else throw new Error('tunnel source|destination <IP> / tunnel mode ipsec|gre / tunnel protection psk <鍵> / tunnel protection proposal <名前>');
     });
   }
-  return fromSubmode(ctx, t, 'interface: ip address / shutdown / no shutdown / description / switchport ... / exit');
+  return fromSubmode(ctx, t, 'interface: ip address / shutdown / no shutdown / description / switchport ... / channel-group <n> mode active|passive|on / speed <Mbps> / exit');
 }
 /**
  * Like IOS, a global-config command typed in a sub-mode (e.g. `interface g0/2` while in interface g0/1)
@@ -288,7 +390,7 @@ function interfaceCommand(ctx: Context, t: string[]): string {
  */
 function fromSubmode(ctx: Context, t: string[], usage: string): string {
   const saved = { ...ctx.session };
-  ctx.session.mode = 'config'; ctx.session.iface = undefined;
+  ctx.session.mode = 'config'; ctx.session.iface = undefined; ctx.session.range = undefined;
   try { return configCommand(ctx, t); }
   catch (error) {
     Object.assign(ctx.session, saved);
@@ -323,24 +425,46 @@ function natCommand(ctx: Context, t: string[], remove: boolean): string {
 function configCommand(ctx: Context, t: string[]): string {
   const { network, id, session: s, device: d } = ctx;
   const cmd = t.join(' ');
+  if (t[0] === 'interface' && t[1] === 'range' && t[2]) {
+    // interface range g0/1-2 / g0/1 - 2 / g0/1, g0/3
+    const ports = t.slice(2).join('').split(',').flatMap(part => {
+      const m = /^(.*?)(\d+)-(\d+)$/.exec(part);
+      if (!m) return [ifaceName(d, part)];
+      const [a, b] = [Number(m[2]), Number(m[3])];
+      if (b < a || b - a > 63) throw new Error(`範囲が不正です: ${part}`);
+      return Array.from({ length: b - a + 1 }, (_, k) => ifaceName(d, `${m[1]}${a + k}`));
+    });
+    for (const p of ports) { const i = d.interfaces.find(x => x.id === p); if (!i || (i.kind ?? 'ethernet') !== 'ethernet') throw new Error(`interface range には存在する物理ポートを指定します: ${p}`); }
+    s.mode = 'interface'; s.iface = ports[0]; s.range = [...new Set(ports)]; return '';
+  }
   if (t[0] === 'interface' && t[1]) {
     const name = ifaceName(d, t.slice(1).join(''));
     if (!d.interfaces.some(i => i.id === name)) network.update(id, x => { createInterface(x, name); });
-    s.mode = 'interface'; s.iface = name; return '';
+    s.mode = 'interface'; s.iface = name; s.range = undefined; return '';
   }
   if (t[0] === 'no' && t[1] === 'interface' && t[2]) {
-    const name = ifaceName(d, t[2]);
-    network.update(id, x => { const i = x.interfaces.find(y => y.id === name); if (!i || (i.kind ?? 'ethernet') === 'ethernet') throw new Error('削除できるのは論理インターフェース（サブインターフェース / SVI / loopback / tunnel）のみです'); x.interfaces = x.interfaces.filter(y => y !== i); });
+    const name = ifaceName(d, t.slice(2).join(''));
+    network.update(id, x => {
+      const i = x.interfaces.find(y => y.id === name);
+      if (!i || (i.kind ?? 'ethernet') === 'ethernet') throw new Error('削除できるのは論理インターフェース（サブインターフェース / SVI / loopback / tunnel / Port-channel）のみです');
+      x.interfaces = x.interfaces.filter(y => y !== i);
+      // Deleting a port-channel releases its members (they become individual ports again).
+      if (i.kind === 'port-channel') for (const m of x.interfaces) if (m.channelGroup?.group === Number(i.id.slice(2))) delete m.channelGroup;
+    });
+    return '';
+  }
+  if (t[0] === 'port-channel' && t[1] === 'load-balance') {
+    const method = t[2] as LoadBalance;
+    if (!['src-dst-mac', 'src-dst-ip', 'src-dst-mixed-ip-port'].includes(method)) throw new Error('port-channel load-balance src-dst-mac|src-dst-ip|src-dst-mixed-ip-port');
+    network.update(id, x => { if (method === 'src-dst-mixed-ip-port') delete x.lagLoadBalance; else x.lagLoadBalance = method; });
     return '';
   }
   if (t[0] === 'hostname') throw new Error('教育用: ホスト名は構成図の機器名と連動するため、ここでは変更できません');
   if (t[0] === 'ip' && t[1] === 'route') {
     // CIDR, or network + dotted mask like IOS (ip route 0.0.0.0 0.0.0.0 <next-hop> = default route).
     const rest = t.slice(t[2]?.includes('/') ? 3 : 4);
-    const hop = rest[0]; if (!hop) throw new Error('使い方: ip route <CIDR> <next-hop|interface> [distance]（例: ip route 192.168.2.0/24 10.0.0.2）');
-    const dest = toCidr(t[2], t[3]);
-    const viaIf = !isIpv4(hop) ? ifaceName(d, hop) : undefined;
-    const nextHop = viaIf ? (rest[1] && isIpv4(rest[1]) ? rest[1] : undefined) : hop;
+    if (!rest[0]) throw new Error('使い方: ip route <CIDR> <next-hop|interface> [distance]（例: ip route 192.168.2.0/24 10.0.0.2）');
+    const dest = toCidr(t[2], t[3]); const { viaIf, nextHop } = routeVia(d, rest);
     const distance = rest.find((x, i) => i > 0 && /^\d+$/.test(x));
     network.addRoute(id, { destination: dest, nextHop, interfaceId: viaIf, preference: distance ? num(distance, 1, 255, 'distance') : 1, metric: 0 });
     return '';
@@ -348,11 +472,11 @@ function configCommand(ctx: Context, t: string[]): string {
   if (t[0] === 'no' && t[1] === 'ip' && t[2] === 'route') {
     if (!t[3]) throw new Error('使い方: no ip route <CIDR> [next-hop]（例: no ip route 192.168.2.0/24）');
     const dest = toCidr(t[3], t[4]);
-    const hop = t[t[3].includes('/') ? 4 : 5];
-    if (!network.deleteRoute(id, dest, hop && isIpv4(hop) ? hop : undefined)) throw new Error('指定されたStatic routeはありません（show ip route static で登録済みの経路を確認できます）');
+    const { viaIf, nextHop } = routeVia(d, t.slice(t[3].includes('/') ? 4 : 5));
+    if (!network.deleteRoute(id, dest, nextHop, viaIf)) throw new Error('指定されたStatic routeはありません（show ip route static で登録済みの経路を確認できます）');
     return '';
   }
-  if (t[0] === 'ip' && t[1] === 'default-gateway') { network.setGateway(id, t[2]); return ''; }
+  if (t[0] === 'ip' && t[1] === 'default-gateway') { if (!t[2]) throw new Error('使い方: ip default-gateway <IP>（削除は no ip default-gateway）'); network.setGateway(id, t[2]); return ''; }
   if (cmd === 'no ip default-gateway') { network.setGateway(id, ''); return ''; }
   if (t[0] === 'ip' && t[1] === 'nat') return natCommand(ctx, t.slice(2), false);
   if (t[0] === 'no' && t[1] === 'ip' && t[2] === 'nat') return natCommand(ctx, t.slice(3), true);
@@ -364,13 +488,15 @@ function configCommand(ctx: Context, t: string[]): string {
     s.mode = 'vlan'; s.vlan = list[0]; return '';
   }
   if (t[0] === 'no' && t[1] === 'vlan' && t[2]) { const v = num(t[2], 2, 4094, 'VLAN ID'); network.update(id, x => { x.vlans = (x.vlans ?? []).filter(y => y.id !== v); }); return ''; }
-  if (t[0] === 'spanning-tree' || cmd === 'no spanning-tree' || cmd.startsWith('no spanning-tree')) {
+  if (t[0] === 'spanning-tree' || (t[0] === 'no' && t[1] === 'spanning-tree')) {
     if (!switchingKinds.includes(d.kind)) throw new Error('STPはスイッチの機能です');
-    const pri = t.indexOf('priority');
+    const neg = t[0] === 'no'; const a = t.slice(neg ? 2 : 1);
+    if (a[0] === 'vlan') a.splice(0, 2); // single instance: `spanning-tree vlan <list> …` applies to the one tree
+    if (a.length && a[0] !== 'priority') throw new Error(`spanning-tree ${a[0]} は未対応です（spanning-tree [priority <0-61440>] / no spanning-tree [priority]。cost / portfast は interface モードで設定します）`);
     network.update(id, x => {
       const stp = x.stp ??= { enabled: true, priority: 32768 };
-      if (t[0] === 'no') stp.enabled = false;
-      else { stp.enabled = true; if (pri >= 0) { const p = num(t[pri + 1], 0, 61440, 'priority'); if (p % 4096) throw new Error('priority は4096の倍数です（0, 4096, 8192 …）'); stp.priority = p; } }
+      if (neg) { if (a[0] === 'priority') stp.priority = 32768; else stp.enabled = false; }
+      else { stp.enabled = true; if (a[0] === 'priority') { const p = num(a[1], 0, 61440, 'priority'); if (p % 4096) throw new Error('priority は4096の倍数です（0, 4096, 8192 …）'); stp.priority = p; } }
     });
     return '';
   }
@@ -406,7 +532,16 @@ function configCommand(ctx: Context, t: string[]): string {
     });
     return '';
   }
-  if (t[0] === 'no' && t[1] === 'ip' && t[2] === 'prefix-list' && t[3]) { network.update(id, x => { x.prefixLists = (x.prefixLists ?? []).filter(l => l.name !== t[3]); }); return ''; }
+  if (t[0] === 'no' && t[1] === 'ip' && t[2] === 'prefix-list' && t[3]) {
+    // `no ip prefix-list P` removes the list; with `seq <n>` (or `permit|deny <CIDR>`) only that entry. A list left empty is removed, like IOS.
+    const seq = t[4] === 'seq' ? num(t[5], 1, 65535, 'seq') : undefined; const a = seq ? 6 : 4; const prefix = t[a + 1] && toCidr(t[a + 1]);
+    network.update(id, x => {
+      const list = x.prefixLists?.find(l => l.name === t[3]);
+      if (t.length > 4) { const before = list?.entries.length; if (list) list.entries = list.entries.filter(e => !((seq === undefined || e.seq === seq) && (!prefix || (e.action === t[a] && e.prefix === prefix)))); if (!list || list.entries.length === before) throw new Error('一致するprefix-listのエントリがありません'); }
+      x.prefixLists = (x.prefixLists ?? []).filter(l => l.name !== t[3] || (t.length > 4 && l.entries.length));
+    });
+    return '';
+  }
   if (t[0] === 'firewall' || (t[0] === 'no' && t[1] === 'firewall')) {
     if (d.kind !== 'firewall') throw new Error('firewall コマンドはFirewall機器で使用します（ルータではACLを使用）');
     network.update(id, x => {
@@ -431,9 +566,10 @@ function ospfCommand(ctx: Context, t: string[]): string {
     return '';
   }
   if (a[0] === 'passive-interface' && a[1]) { const p = ifaceName(ctx.device, a[1]); network.update(id, x => { const o = x.ospf!; o.passive = o.passive.filter(y => y !== p); if (!neg) o.passive.push(p); }); return ''; }
-  if (a[0] === 'router-id') { network.update(id, x => { if (neg) delete x.ospf!.routerId; else { ipv4(a[1]); x.ospf!.routerId = a[1]; } }); return ''; }
+  if (a[0] === 'router-id') { if (!neg && !a[1]) throw new Error('使い方: router-id <IPv4>'); network.update(id, x => { if (neg) delete x.ospf!.routerId; else { ipv4(a[1]); x.ospf!.routerId = a[1]; } }); return ''; }
   if (a.join(' ') === 'default-information originate') { network.update(id, x => { x.ospf!.defaultOriginate = !neg; }); return ''; }
-  return fromSubmode(ctx, t, 'router ospf: network / passive-interface / router-id / default-information originate');
+  if (a[0] === 'maximum-paths') { network.update(id, x => { if (neg) delete x.ospf!.maximumPaths; else x.ospf!.maximumPaths = num(a[1], 1, 16, 'maximum-paths'); }); return ''; }
+  return fromSubmode(ctx, t, 'router ospf: network / passive-interface / router-id / default-information originate / maximum-paths <1-16>');
 }
 function bgpCommand(ctx: Context, t: string[]): string {
   const { network, id } = ctx; const neg = t[0] === 'no'; const a = neg ? t.slice(1) : t;
@@ -458,7 +594,7 @@ function bgpCommand(ctx: Context, t: string[]): string {
     return '';
   }
   if (a[0] === 'network' && a[1]) { const prefix = toCidr(a[1], a[2] === 'mask' ? a[3] : undefined); network.update(id, x => { const b = x.bgp!; b.networks = b.networks.filter(y => y !== prefix); if (!neg) b.networks.push(prefix); }); return ''; }
-  if (a[0] === 'bgp' && a[1] === 'router-id') { network.update(id, x => { if (neg) delete x.bgp!.routerId; else { ipv4(a[2]); x.bgp!.routerId = a[2]; } }); return ''; }
+  if (a[0] === 'bgp' && a[1] === 'router-id') { if (!neg && !a[2]) throw new Error('使い方: bgp router-id <IPv4>'); network.update(id, x => { if (neg) delete x.bgp!.routerId; else { ipv4(a[2]); x.bgp!.routerId = a[2]; } }); return ''; }
   return fromSubmode(ctx, t, 'router bgp: neighbor ... / network <CIDR> / bgp router-id <IP>');
 }
 function aclCommand(ctx: Context, t: string[]): string {
@@ -480,16 +616,23 @@ function aclCommand(ctx: Context, t: string[]): string {
 
 export function iosCommand(ctx: Context): string {
   const { session: s, network, id } = ctx;
-  let t = ctx.tokens;
+  const viaDo = ctx.tokens[0] === 'do' && s.mode !== 'user' && s.mode !== 'privileged';
+  const t = expand(viaDo ? ctx.tokens.slice(1) : ctx.tokens, viaDo ? EXEC : VOCAB[s.mode]);
   const cmd = t.join(' ');
   if (cmd === 'enable' || cmd === 'en') { s.mode = s.mode === 'user' ? 'privileged' : s.mode; return ''; }
   if (cmd === 'disable') { s.mode = 'user'; return ''; }
-  if (cmd === 'end' || cmd === '^Z') { if (s.mode !== 'user') s.mode = 'privileged'; s.iface = undefined; return ''; }
-  if (cmd === 'exit') { s.mode = ({ interface: 'config', vlan: 'config', 'router-ospf': 'config', 'router-bgp': 'config', acl: 'config', config: 'privileged', privileged: 'user', user: 'user' } as const)[s.mode]; s.iface = undefined; return ''; }
+  if (cmd === 'end' || cmd === '^Z') { if (s.mode !== 'user') s.mode = 'privileged'; s.iface = undefined; s.range = undefined; return ''; }
+  if (cmd === 'exit') { s.mode = ({ interface: 'config', vlan: 'config', 'router-ospf': 'config', 'router-bgp': 'config', acl: 'config', config: 'privileged', privileged: 'user', user: 'user' } as const)[s.mode]; s.iface = undefined; s.range = undefined; return ''; }
   if ((cmd === 'configure terminal' || cmd === 'conf t' || cmd === 'config t')) { if (s.mode === 'user') throw new Error('Invalid input: 先に enable で特権モードに入ってください'); s.mode = 'config'; return ''; }
-  if (cmd === 'write memory' || cmd === 'wr' || cmd === 'copy running-config startup-config') return '[OK]（シミュレータの設定はブラウザに自動保存されます）';
-  if (t[0] === 'do' && s.mode !== 'user' && s.mode !== 'privileged') t = t.slice(1);
-  else if (s.mode !== 'user' && s.mode !== 'privileged') {
+  if (cmd === 'write memory' || cmd === 'write' || cmd === 'wr' || cmd === 'copy running-config startup-config') return '[OK]（シミュレータの設定はブラウザに自動保存されます）';
+  if (!viaDo && s.mode !== 'user' && s.mode !== 'privileged') {
+    if (s.mode === 'interface' && s.range) {
+      // interface range: run the command on every port of the range (a global command leaves the mode after the first).
+      const out: string[] = []; const range = s.range;
+      for (const p of range) { if (s.mode !== 'interface') break; s.iface = p; out.push(interfaceCommand({ ...ctx, device: network.device(id) }, t)); }
+      if (s.mode === 'interface') s.iface = range[0];
+      return [...new Set(out.filter(Boolean))].join('\n');
+    }
     if (s.mode === 'interface') return interfaceCommand(ctx, t);
     if (s.mode === 'vlan') { if (t[0] === 'name' && t[1]) { network.update(id, x => { const v = x.vlans?.find(y => y.id === s.vlan); if (!v) throw new Error('Default VLAN 1 may not have its name changed（VLAN 1 は既定のVLANのため名前を変更できません）'); v.name = t.slice(1).join('_').slice(0, 32); }); return ''; } return fromSubmode(ctx, t, 'vlan: name <名前> / exit'); }
     if (s.mode === 'router-ospf') return ospfCommand(ctx, t);

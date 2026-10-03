@@ -11,7 +11,7 @@
 | React UI | 表示、入力、学習ページ、可視化、選択・再生 | `src/app/`, `src/components/` |
 | UI state | 選択機器・リンク・イベント、タブ、通知、保存状態、更新番号 | `src/stores/ui.ts` |
 | Application | 操作の受付、CLI呼び出し、保存・読み込み、進捗、採点の実行、切り分け | `src/application/` |
-| Network Core | 機器・リンク・L2・ARP・ルーティング・TCP/UDP・DNS・NAT・Firewall・OSPF・BGP・トンネル | `src/simulator/core/NetworkSimulator.ts`, `src/simulator/{l2,l3,services,routing}/` |
+| Network Core | 機器・リンク・L2・LAG・ARP・ルーティング（ECMP）・TCP/UDP・DNS・NAT・Firewall・OSPF・BGP・トンネル・帯域モデル | `src/simulator/core/NetworkSimulator.ts`, `src/simulator/core/flow.ts`, `src/simulator/{l2,l3,services,routing}/` |
 | Capture | バイト列エンコード、デコード、フィルタ、PCAP入出力 | `src/simulator/capture/` |
 | CLI | 構文分割、Registry、モード、状態からの出力生成（Linux / IOS風） | `src/cli/` |
 | AWS | VPCの教育用モデル、設計検証、往復の到達性分析 | `src/aws/` |
@@ -27,7 +27,9 @@ Core（`simulator` / `aws` / `terraform` / `cli` / `labs`）はReact、Zustand�
 ## Network Core
 
 - 設定APIは`addDevice / update / connect / configureInterface / addRoute / setLinkState ...`。入力検証はCoreが行い、UIにもCLIにも依存させません。`snapshot / device`は複製を返します。
-- 設定変更のたびに`recompute`で、Line protocol・STP・トンネル状態・OSPF・BGPを定常状態として再計算し、動的経路を機器に反映します。ARPとMAC表はトポロジー変更時にクリアします。
+- 設定変更のたびに`recompute`で、LAG（`l2/Lag.ts`: メンバーの束ね・suspended・down）・Line protocol・STP（束ねたメンバーはPort-channelの1ポートとして計算）・トンネル状態・OSPF・BGPを定常状態として再計算し、動的経路を機器に反映します。ARPとMAC表はトポロジー変更時にクリアします。
+- 経路選択（`l3/RoutingTable.ts` の `resolveRoute`）は、同じプレフィックス・AD・metricの使える経路をECMPの候補としてまとめ、パケットの5-tuple（`core/flow.ts`）のハッシュで1つを選びます。LAGのメンバーも、`port-channel load-balance` の入力のハッシュでフレームごとに選びます。どちらも選択の理由（候補・入力・結果）をイベントに残します。
+- `throughput()` は帯域モデルです。各ストリームで実際にTCP接続を開いて通り道を決め、リンク速度から上限を求め、共有するリンクをmax-min公平で分けます（`iperf3`・ラボの採点・可視化が共通で使います）。
 - IPv4の転送は「ingress ACL → NAT（外→内）→ 自分宛て/トンネル終端 → 転送可否 → TTL → 経路選択 → Firewall → TTL減算 → NAT（内→外）→ egress ACL → トンネル化 → リンク → ARP → L2」の順です。応答（Echo Reply、SYN/ACK、DNS応答、ICMPエラー）は受信側で新しく作り、独立に復路をルーティングします。宛先が存在するだけで成功にはしません。
 - L2はスイッチごとにMAC学習・VLAN・STPの転送可否を評価し、フレームを実際に配送します。ループ時は256フレームで打ち切ります。
 - すべての処理は`SimulationEvent`と`Capture`（バイト列）を残します。Debugger、Event Log、Capture、tcpdump、採点、切り分けラダーは同じ記録を共有します。
@@ -52,5 +54,5 @@ Dexie v3のテーブルは`labs / progress / quizzes / history（labId付き）/
 
 ## テスト方針
 
-- Vitest（418件）: CIDR・VLSM、経路選択、ARP・MAC学習・VLAN・STP、ICMP・TCP・UDP・DNS・TLS・HTTP、NAT・ACL・Firewall、OSPF・BGP・トンネル、エンコード/デコード/フィルタ/PCAP、CLI、AWS分析、Terraform（parser・plan・drift・import・module）、切り分け、可視化ツールが示す教育上の主張、そして**全65ラボが「初期状態では不合格・参考解で合格」**であること。
-- Playwright（17件）: `dist/`を`/network-test/`に静的配信し、GUIとTerminalでのVertical Slice、保存と復元、deep link、モバイル教材、Quiz、Mastery、全章の可視化、AWS・Terraform・Analyzer・ラボ一覧、配線・移動・リンク障害、IndexedDB不可時の動作を確認します。構成管理は両エディタの空の新規作成・テンプレート編集・命名保存・再読込・ラボとの分離・モバイルでの操作に加え、削除確認・キャンセル・保存失敗・削除後の再保存を検証します。AWS公式アイコンの読み込みと既存の図の重なりも確認します。ブラウザテストはCoreテストの代わりにはしません。
+- Vitest（575件）: CIDR・VLSM、経路選択、ARP・MAC学習・VLAN・STP、Link Aggregation・LACP、ECMP・フローのハッシュ、帯域モデル、ICMP・TCP・UDP・DNS・TLS・HTTP、NAT・ACL・Firewall、OSPF・BGP・トンネル、エンコード/デコード/フィルタ/PCAP、CLI、AWS分析、Terraform（parser・plan・drift・import・module）、切り分け、ポートと媒体の対応表、可視化ツールが示す教育上の主張、そして**全74ラボが「初期状態では不合格・参考解で合格」**であることと、近道（STPに任せる・故障したケーブルを直す・全リンクを増速する・静的ECMPで済ませる・STPを止める）を合格にしないこと。
+- Playwright（34件）: `dist/`を`/network-test/`に静的配信し、GUIとTerminalでのVertical Slice、保存と復元、deep link、幅1024pxでの教材、Quiz、Mastery、全章の可視化、AWS・Terraform・Analyzer・ラボ一覧、配線・移動・リンク障害、IndexedDB不可時の動作を確認します。構成管理は両エディタの空の新規作成・テンプレート編集・命名保存・再読込・ラボとの分離・幅1024pxでの操作に加え、削除確認・キャンセル・保存失敗・削除後の再保存を検証します。AWS公式アイコンの読み込みと既存の図の重なり（LAG・ECMP・冗長化のテンプレートを含む）、LAGをTerminalで組んだ結果が構成図の Port-channel 表示と Debugger の Path 表示に出ること、ECMPの可視化で静的ルートとOSPFの故障時の違いが出ることも確認します。ブラウザテストはCoreテストの代わりにはしません。

@@ -11,10 +11,12 @@ export function parseCommand(input: string) {
 /** Take `-x value` style options out of a token list. Returns remaining positional tokens. */
 export function options(tokens: string[], withValue: string[] = []) {
   const flags = new Set<string>(); const values = new Map<string, string>(); const rest: string[] = [];
+  const value = (o: string, v: string | undefined) => { if (v === undefined) throw new Error(`${o} の値がありません`); values.set(o, v); };
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
-    if (withValue.includes(t)) { const v = tokens[++i]; if (v === undefined) throw new Error(`${t} の値がありません`); values.set(t, v); }
-    else if (/^-[a-zA-Z]{2,}$/.test(t) && !withValue.some(w => t.startsWith(w))) for (const c of t.slice(1)) flags.add(`-${c}`);
+    if (withValue.includes(t)) value(t, tokens[++i]);
+    // getopt-style short options: -zv (flags), -c3 (attached value), -ni eth0 (the option taking a value uses the next token)
+    else if (/^-[a-zA-Z]/.test(t)) for (let k = 1; k < t.length; k++) { const o = `-${t[k]}`; if (withValue.includes(o)) { value(o, k + 1 < t.length ? t.slice(k + 1) : tokens[++i]); break; } flags.add(o); }
     else if (t.startsWith('-') && t.length > 1 && !/^-\d/.test(t)) flags.add(t);
     else rest.push(t);
   }

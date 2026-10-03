@@ -1,5 +1,5 @@
 import type { DeviceState, DnsRecord, DnsZone } from '../core/types';
-import { access, build, dnsService, https, loopback, ssh, subinterface, svi, trunk, tunnel, vlans, web } from './build';
+import { access, build, dnsService, https, iperf, lag, loopback, ssh, subinterface, svi, trunk, tunnel, vlans, web, type DeviceSpec } from './build';
 
 // ---------------------------------------------------------------- ④ Ethernet / VLAN
 /** Two switches joined by a trunk, router-on-a-stick for inter-VLAN routing. */
@@ -30,6 +30,75 @@ export function stpScenario(stp = true) {
     sw('SW1', 260, 40), sw('SW2', 620, 40), sw('SW3', 440, 280),
     { id: 'PC2', kind: 'pc', at: [840, 40], ip: { eth0: '192.168.1.12/24' } },
   ], [['PC1', 'eth0', 'SW1', 'g0/1'], ['SW1', 'g0/2', 'SW2', 'g0/2'], ['SW2', 'g0/3', 'SW3', 'g0/3'], ['SW3', 'g0/2', 'SW1', 'g0/3'], ['SW2', 'g0/1', 'PC2', 'eth0']]);
+}
+
+/**
+ * Two switches joined by two cables, VLAN 10 / 20 on both sides (PC3 / PC4 run iperf3).
+ * `lag`: both cables bundled with LACP into po1, a trunk for VLAN 10,20. Otherwise two separate trunks (STP blocks one).
+ */
+export function lagScenario(opts: { lag?: boolean; speed?: number; cables?: 2 | 3 } = {}) {
+  const uplinks = opts.cables === 3 ? ['g0/6', 'g0/7', 'g0/8'] : ['g0/7', 'g0/8'];
+  const sw = (id: string, x: number) => ({ id, kind: 'switch' as const, at: [x, 160] as [number, number], set: (d: DeviceState) => {
+    vlans(d, [10, 'SALES'], [20, 'DEV']); access(d, 10, 'g0/1'); access(d, 20, 'g0/2');
+    for (const p of uplinks) trunk(d, p, [10, 20]);
+    if (opts.lag) lag(d, 1, 'active', ...uplinks);
+  } });
+  const speed = opts.speed ?? 1000;
+  return build([
+    { id: 'PC1', kind: 'pc', at: [40, 40], ip: { eth0: '192.168.10.11/24' } },
+    { id: 'PC2', kind: 'pc', at: [40, 280], ip: { eth0: '192.168.20.12/24' } },
+    sw('SW1', 280), sw('SW2', 600),
+    { id: 'PC3', kind: 'pc', at: [840, 40], ip: { eth0: '192.168.10.13/24' }, set: d => { d.services = [iperf()]; } },
+    { id: 'PC4', kind: 'pc', at: [840, 280], ip: { eth0: '192.168.20.14/24' }, set: d => { d.services = [iperf()]; } },
+  ], [['PC1', 'eth0', 'SW1', 'g0/1', 10_000], ['PC2', 'eth0', 'SW1', 'g0/2', 10_000], ...uplinks.map(p => ['SW1', p, 'SW2', p, speed] as [string, string, string, string, number]),
+    ['SW2', 'g0/1', 'PC3', 'eth0', 10_000], ['SW2', 'g0/2', 'PC4', 'eth0', 10_000]]);
+}
+
+// ---------------------------------------------------------------- ③ ECMP / ⑨ design
+export type DiamondRouting = 'none' | 'single' | 'static' | 'ospf';
+/**
+ * R1 – {R2, R3} – R4 – SRV: two equal-cost paths to 10.20.0.0/24. R1 g0/0 (192.168.1.1/24) faces the office LAN.
+ * 'single': R1 and R4 use only the path through R2. 'static': equal static routes through R2 and R3. 'ospf': OSPF everywhere.
+ */
+function diamond(routing: DiamondRouting, x: number, core = 1000): { devices: DeviceSpec[]; links: [string, string, string, string, number][] } {
+  const r = (d: DeviceState, ...routes: [string, string][]) => { if (routing === 'static' || routing === 'single') for (const [destination, nextHop] of routes) d.routes.push({ destination, nextHop, preference: 1, metric: 0, kind: 'static' }); };
+  const ospf = (d: DeviceState, passive: string[] = []) => { if (routing === 'ospf') d.ospf = { processId: 1, networks: [{ prefix: '10.0.0.0/8', area: 0 }, { prefix: '192.168.1.0/24', area: 0 }], passive }; };
+  return { devices: [
+    { id: 'R1', kind: 'router', at: [x, 160], ip: { 'g0/0': '192.168.1.1/24', 'g0/1': '10.0.12.1/24', 'g0/2': '10.0.13.1/24' }, set: d => {
+      r(d, ['10.20.0.0/24', '10.0.12.2'], ...(routing === 'static' ? [['10.20.0.0/24', '10.0.13.3']] as [string, string][] : [])); ospf(d, ['g0/0']); } },
+    { id: 'R2', kind: 'router', at: [x + 240, 40], ip: { 'g0/0': '10.0.12.2/24', 'g0/1': '10.0.24.2/24' }, set: d => { r(d, ['10.20.0.0/24', '10.0.24.4'], ['192.168.1.0/24', '10.0.12.1']); ospf(d); } },
+    { id: 'R3', kind: 'router', at: [x + 240, 280], ip: { 'g0/0': '10.0.13.3/24', 'g0/1': '10.0.34.3/24' }, set: d => { r(d, ['10.20.0.0/24', '10.0.34.4'], ['192.168.1.0/24', '10.0.13.1']); ospf(d); } },
+    { id: 'R4', kind: 'router', at: [x + 480, 160], ip: { 'g0/0': '10.0.24.4/24', 'g0/1': '10.0.34.4/24', 'g0/2': '10.20.0.1/24' }, set: d => {
+      r(d, ['192.168.1.0/24', '10.0.24.2'], ...(routing === 'static' ? [['192.168.1.0/24', '10.0.34.3']] as [string, string][] : [])); ospf(d, ['g0/2']); } },
+    { id: 'SRV', kind: 'server', at: [x + 720, 160], ip: { eth0: '10.20.0.10/24' }, gw: '10.20.0.1', set: d => { d.services = [web('nginx', '<h1>Server</h1>'), iperf()]; } },
+  ], links: [['R1', 'g0/1', 'R2', 'g0/0', core], ['R1', 'g0/2', 'R3', 'g0/0', core], ['R2', 'g0/1', 'R4', 'g0/0', core], ['R3', 'g0/1', 'R4', 'g0/1', core], ['R4', 'g0/2', 'SRV', 'eth0', 10_000]] };
+}
+/** PC1 – R1 – {R2, R3} – R4 – SRV (chapter 3: ECMP). */
+export function ecmpScenario(routing: DiamondRouting = 'static') {
+  const core = diamond(routing, 220);
+  return build([{ id: 'PC1', kind: 'pc', at: [0, 160], ip: { eth0: '192.168.1.10/24' }, gw: '192.168.1.1' }, ...core.devices],
+    [['PC1', 'eth0', 'R1', 'g0/0', 10_000], ...core.links]);
+}
+export interface DesignOptions { cables?: 1 | 2; lag?: boolean; stp?: boolean; routing?: DiamondRouting; speeds?: { access?: number; inter?: number; gateway?: number; core?: number } }
+/**
+ * Chapter 9 design network: PC1 / PC2 – SW1 =(1 or 2 cables)= SW2 – R1 – {R2, R3} – R4 – SRV.
+ * The options decide what is redundant, aggregated or still a single point of failure.
+ */
+export function designScenario(o: DesignOptions = {}) {
+  const sp = { access: 10_000, inter: 1000, gateway: 10_000, core: 10_000, ...o.speeds };
+  const sw = (id: string, x: number, edge: string[]) => ({ id, kind: 'switch' as const, at: [x, 160] as [number, number], set: (d: DeviceState) => {
+    d.stp = { enabled: o.stp ?? true, priority: id === 'SW2' ? 4096 : 32768 };
+    access(d, 1, ...edge);
+    if (o.lag) lag(d, 1, 'active', 'g0/7', 'g0/8');
+  } });
+  const core = diamond(o.routing ?? 'ospf', 720, sp.core);
+  return build([
+    { id: 'PC1', kind: 'pc', at: [0, 40], ip: { eth0: '192.168.1.11/24' }, gw: '192.168.1.1' },
+    { id: 'PC2', kind: 'pc', at: [0, 280], ip: { eth0: '192.168.1.12/24' }, gw: '192.168.1.1' },
+    sw('SW1', 240, ['g0/1', 'g0/2']), sw('SW2', 480, ['g0/1']), ...core.devices,
+  ], [['PC1', 'eth0', 'SW1', 'g0/1', sp.access], ['PC2', 'eth0', 'SW1', 'g0/2', sp.access], ['SW1', 'g0/7', 'SW2', 'g0/7', sp.inter],
+    ...((o.cables ?? 2) === 2 ? [['SW1', 'g0/8', 'SW2', 'g0/8', sp.inter]] as [string, string, string, string, number][] : []),
+    ['SW2', 'g0/1', 'R1', 'g0/0', sp.gateway], ...core.links]);
 }
 
 // ---------------------------------------------------------------- ⑤ DNS

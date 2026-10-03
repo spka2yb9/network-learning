@@ -23,8 +23,8 @@ interface LabBase {
   diagnosis?: Diagnosis;
   /** Shown after all checks pass. */
   debrief?: string;
-  /** Observation questions answered from what the learner saw (checked exactly, trimmed). */
-  questions?: { label: string; answer: string }[];
+  /** Observation / design questions answered from what the learner saw (checked exactly, trimmed). With `options`, chosen from a list. */
+  questions?: { label: string; answer: string; options?: string[] }[];
 }
 export interface NetworkLab extends LabBase {
   workspace: 'network';

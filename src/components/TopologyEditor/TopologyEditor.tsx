@@ -62,9 +62,11 @@ function Editor({ compact = false }: { compact?: boolean }) {
   const domainView = useUI(s => s.domainView);
   const flow = useReactFlow();
   const snapshot = useMemo(() => lab.network.snapshot(), [revision]);
-  // Re-fit when the set of devices changes (lab / template switch); the fitView prop only fits on mount.
+  const lags = useMemo(() => lab.network.lagState(), [revision]);
+  // Re-fit when the set of devices or the workspace changes (lab / template switch, reset, import); the fitView prop only fits on mount.
   const ids = snapshot.devices.map(d => d.id).join();
-  useEffect(() => { const t = requestAnimationFrame(() => void flow.fitView({ padding: 0.2 })); return () => cancelAnimationFrame(t); }, [ids]); // eslint-disable-line react-hooks/exhaustive-deps
+  const workspace = lab.workspaceRevision;
+  useEffect(() => { const t = requestAnimationFrame(() => void flow.fitView({ padding: 0.2 })); return () => cancelAnimationFrame(t); }, [ids, workspace]); // eslint-disable-line react-hooks/exhaustive-deps
   // Devices must never cover each other. Once every node is measured, overlapping devices are pushed apart
   // (on a new network: all of them; afterwards: only newly added ones, so the learner's layout stays put).
   const wrapper = useRef<HTMLDivElement>(null);
@@ -94,7 +96,7 @@ function Editor({ compact = false }: { compact?: boolean }) {
     };
     frame = requestAnimationFrame(run);
     return () => cancelAnimationFrame(frame);
-  }, [ids, compact]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ids, workspace, compact]); // eslint-disable-line react-hooks/exhaustive-deps
   // A device dropped onto another one slides to the nearest free spot.
   const onNodeDragStop = useCallback((_: unknown, node: Node) => {
     const boxes = measure(); const me = boxes.find(b => b.id === node.id);
@@ -132,21 +134,36 @@ function Editor({ compact = false }: { compact?: boolean }) {
     return { id: device.id, type: 'device', position: device.position, selected: device.id === selectedDevice && !selectedLink && !compact,
       data: { device, active: event?.deviceId === device.id, selectedDevice: device.id === selectedDevice && !compact, flip: !peer || peer.position.x > device.position.x, domain: domains.get(device.id) } };
   });
+  const speed = (mbps: number) => mbps >= 1000 ? `${mbps / 1000}G` : `${mbps}M`;
+  /** A cable that is a LAG member: which port-channel, whether it is bundled, and the bundle's size. */
+  const memberOf = (device: string, port: string) => {
+    const g = snapshot.devices.find(d => d.id === device)?.interfaces.find(i => i.id === port)?.channelGroup;
+    const st = g && lags[device]?.[`po${g.group}`];
+    if (!g || !st) return undefined;
+    const used = st.members.filter(m => m.flag === 'P').length; const idle = st.members.length - used;
+    // Parallel member cables sit close together: only the first member carries the label, summarizing the whole bundle.
+    const label = st.members[0]?.port !== port ? '' : used ? `po${g.group} = ${used}×${speed(st.members.find(m => m.flag === 'P')!.bandwidth)}${idle ? `（${idle}本 未使用）` : ''}` : `po${g.group} Down（${idle}本 未使用）`;
+    return { bundled: st.members.find(m => m.port === port)?.flag === 'P', label };
+  };
   const edges = snapshot.links.map(link => {
     const hot = event?.linkId === link.id;
+    const m = memberOf(link.sourceDevice, link.sourceInterface) ?? memberOf(link.targetDevice, link.targetInterface);
+    // LAG members: bundled ones are thick blue, unbundled ones dashed orange.
+    const lagLabel = m?.label;
     return { id: link.id, source: link.sourceDevice, target: link.targetDevice, sourceHandle: link.sourceInterface, targetHandle: link.targetInterface,
-      label: !link.up ? 'Link Down' : compact ? '' : hot && event?.vlan !== undefined ? `VLAN ${event.vlan}` : `${link.bandwidth >= 1000 ? `${link.bandwidth / 1000}G` : `${link.bandwidth}M`}`, type: 'smoothstep',
+      label: !link.up ? 'Link Down' : compact ? '' : hot && event?.vlan !== undefined ? `VLAN ${event.vlan}` : lagLabel ?? speed(link.bandwidth), type: 'smoothstep',
       animated: link.up && hot, selected: link.id === selectedLink,
-      style: { stroke: !link.up ? '#c56c61' : hot ? '#199a7b' : link.id === selectedLink ? '#476f9e' : '#94b4aa', strokeWidth: hot || link.id === selectedLink ? 3 : 2, strokeDasharray: link.up ? undefined : '5 5' },
+      style: { stroke: !link.up ? '#c56c61' : hot ? '#199a7b' : link.id === selectedLink ? '#476f9e' : m ? (m.bundled ? '#5b7fc7' : '#d08a3c') : '#94b4aa', strokeWidth: hot || link.id === selectedLink || m?.bundled ? 3 : 2, strokeDasharray: !link.up || (m && !m.bundled) ? '5 5' : undefined },
       labelStyle: { fill: '#415c50', fontSize: 13 }, labelBgStyle: { fill: '#f8faf7' } };
   });
   const connect = useCallback((c: Connection) => {
     if (!c.sourceHandle || !c.targetHandle) return;
-    lab.mutate(n => n.connect({ id: crypto.randomUUID(), sourceDevice: c.source, sourceInterface: c.sourceHandle!, targetDevice: c.target, targetInterface: c.targetHandle!, up: true, bandwidth: 1000, latency: 1 }));
+    // Not crypto.randomUUID(): it is missing over plain HTTP (npm run dev --host opened from another device on the LAN).
+    lab.mutate(n => n.connect({ id: `link-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`, sourceDevice: c.source, sourceInterface: c.sourceHandle!, targetDevice: c.target, targetInterface: c.targetHandle!, up: true, bandwidth: 1000, latency: 1 }));
   }, []);
   const onNodesChange = useCallback((changes: NodeChange<DeviceNode>[]) => {
     for (const c of changes) {
-      if (c.type === 'position' && c.position) lab.moveDevice(c.id, c.position);
+      if (c.type === 'position' && c.position) lab.moveDevice(c.id, c.position, true);
       if (c.type === 'select' && c.selected) useUI.setState({ selectedDevice: c.id, selectedLink: '' });
       if (c.type === 'remove') lab.mutate(n => n.removeDevice(c.id));
     }
@@ -168,7 +185,7 @@ function Editor({ compact = false }: { compact?: boolean }) {
       <Background color="#c7d8d1" gap={20} size={1} variant={BackgroundVariant.Dots}/>
       {!compact && <Controls showInteractive={false}/>}
     </ReactFlow>
-    <div className="canvas-legend"><span><i className="legend-line"/> Link Up</span><span><i className="legend-line down"/> Link Down</span>
+    <div className="canvas-legend"><span><i className="legend-line"/> Link Up</span><span><i className="legend-line down"/> Link Down</span>{!compact && Object.values(lags).some(x => Object.keys(x).length) && <span><i className="legend-line lag"/> LAG</span>}
       {!compact && <><label className="legend-toggle" title="ブロードキャストが届く範囲（同じネットワーク）ごとに、機器を色分けします"><input type="checkbox" checked={domainView} onChange={e => useUI.setState({ domainView: e.target.checked })}/>ブロードキャストドメインを色分け</label><span>ポートからポートへドラッグして配線 · ケーブルをクリックで選択 · ダブルクリックでリンクの Down / Up を切り替え</span></>}</div>
   </div>;
 }

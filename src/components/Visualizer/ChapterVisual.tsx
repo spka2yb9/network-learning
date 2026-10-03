@@ -13,6 +13,7 @@ import LadderDemo from './LinuxVisual';
 import { AwsDemo, TerraformPlanDemo } from './CloudVisuals';
 import { BgpDecision, TunnelCapture } from './VpnBgpVisuals';
 import PacketJourney from './PacketJourney';
+import { EcmpView, LagVsEcmp, LagView, LinkSpeedView, MediaCompat, RedundancyView } from './RedundancyVisuals';
 
 function CaptureSample() {
   const rows = useMemo(() => { const n = dnsScenario(); const link = n.snapshot().links.find(l => l.sourceDevice === 'PC1')!.id; return n.http('PC1', 'https://www.example.com/').captures.filter(c => c.linkId === link); }, []);
@@ -22,13 +23,13 @@ function CaptureSample() {
 const visuals: Record<Exclude<ChapterId, 'capstone'>, () => ReactElement> = {
   'tcp-ip': () => <><LayerExplorer/><HandshakeTimeline/></>,
   subnet: () => <SubnetTools/>,
-  routing: () => <><RouteLookup/><SpfView/></>,
-  'ethernet-vlan': () => <><SwitchLearning/><BroadcastDomains/></>,
+  routing: () => <><RouteLookup/><SpfView/><EcmpView/></>,
+  'ethernet-vlan': () => <><SwitchLearning/><BroadcastDomains/><LinkSpeedView/><MediaCompat/><LagView/></>,
   dns: () => <DnsResolution/>,
   'nat-firewall': () => <><NatTable/><RuleEvaluator/></>,
   linux: () => <LadderDemo/>,
   capture: () => <CaptureSample/>,
-  topology: () => <PacketJourney/>,
+  topology: () => <><PacketJourney/><LagVsEcmp/><RedundancyView/></>,
   aws: () => <AwsDemo/>,
   'vpn-bgp': () => <><TunnelCapture/><BgpDecision/></>,
   terraform: () => <TerraformPlanDemo/>,

@@ -17,20 +17,6 @@ async function toggleLink(page: Page, id: string) {
   await page.mouse.down(); await page.mouse.up(); await page.waitForTimeout(80);
   await page.mouse.down({ clickCount: 2 }); await page.mouse.up({ clickCount: 2 });
 }
-/** The UI marks completion optimistically; wait until it is persisted so a following reload can't race the write. */
-async function persistedProgress(page: Page, id: string) {
-  return page.evaluate(async id => {
-    const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      const req = indexedDB.open('path-network-learning'); req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error);
-    });
-    try {
-      return await new Promise<boolean>((resolve, reject) => {
-        const req = database.transaction('progress').objectStore('progress').get(id);
-        req.onsuccess = () => resolve(req.result?.completed === true); req.onerror = () => reject(req.error);
-      });
-    } finally { database.close(); }
-  }, id);
-}
 test('GUI vertical slice: fail, configure, recover, debug, capture, persist, break', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('#/lab/routing-01');
@@ -109,8 +95,8 @@ test('switching pages or lesson steps starts at the top', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => scrollY)).toBe(0);
 });
 
-test('mobile reading, subnet calculation, quiz and mastery persistence', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+test('narrow PC window: reading, subnet calculation, quiz and mastery persistence', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 768 }); // the narrowest supported PC window
   await page.goto('#/learn/subnet');
   await expect(page.getByRole('heading', { level: 1 })).toContainText('IPアドレス');
   await page.getByRole('tab', { name: /Visual/ }).click();
@@ -133,12 +119,11 @@ test('mobile reading, subnet calculation, quiz and mastery persistence', async (
   }
   await page.getByRole('button', { name: /判定する/ }).click();
   await expect(page.locator('.assessment .not-passed')).toHaveCount(0);
-  await expect.poll(() => persistedProgress(page, 'subnet-mastery')).toBe(true);
   await page.reload();
   await expect(page.locator('.page-heading .badge')).toContainText('実技完了');
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   expect(overflow).toBe(false);
-  await page.screenshot({ path: 'test-results/lesson-mobile.png', fullPage: true });
+  await page.screenshot({ path: 'test-results/lesson-1024.png', fullPage: true });
 });
 test('topology: new lab, node addition, IP validation and JSON export', async ({ page }) => {
   await page.goto('#/simulator');
@@ -187,9 +172,8 @@ test('cables, device movement, link failure and recovery share the simulator sta
 test('JSON import validates before replacing configuration; unavailable IndexedDB stays usable', async ({ page }) => {
   await page.addInitScript(() => { Object.defineProperty(window, 'indexedDB', { get() { throw new Error('Storage disabled for test'); } }); });
   await page.goto('#/simulator');
-  // Storage is disabled, so the app-wide notice and the design list's own error both render as
-  // role="alert"; target the global notice so the locator stays unambiguous.
-  await expect(page.locator('.global-notice')).toContainText('保存データを読み込めません');
+  // The design controls may also report that saved designs can't be listed, so pick the storage notice by its text.
+  await expect(page.getByRole('alert').filter({ hasText: '保存データを読み込めません' })).toBeVisible();
   await page.locator('input[type=file]').setInputFiles({ name: 'broken.json', mimeType: 'application/json', buffer: Buffer.from('{"version":99}') });
   await expect(page.locator('.workspace > .error-text')).toContainText('未対応');
   await expect(page.locator('.device-node')).toHaveCount(4);
@@ -270,6 +254,42 @@ test('terminal: Ctrl+C copies a selection, Ctrl+V pastes, Ctrl+C without selecti
   await page.keyboard.press('Control+C');
   await expect(rows).toContainText('^C');
 });
+test('terminal: deleting full-width characters and wrapped input keeps the screen equal to the command that runs', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 900 }); // the 210-character command below wraps onto several rows
+  await page.goto('#/lab/routing-01');
+  await page.locator('.xterm-helper-textarea').focus();
+  /** The text after the last prompt as drawn on screen (wrapped rows joined). */
+  const typed = () => page.evaluate(() => { const rows = [...document.querySelectorAll('.xterm-rows > div')].map(d => (d.textContent ?? '').replace(/\s+$/, ''));
+    let i = rows.length - 1; while (i > 0 && !rows[i].includes('user@PC1:~$')) i--; return rows.slice(i).join('').split('user@PC1:~$').at(-1)!.replace(/\u00a0/g, ' ').trim(); });
+  await page.keyboard.insertText('あい'); await page.keyboard.press('Backspace'); await page.keyboard.press('Backspace'); await page.keyboard.type('help');
+  await expect.poll(typed).toBe('help');
+  await page.keyboard.press('Control+C');
+  const long = `ping -c 1 ${'1'.repeat(200)}`;
+  await page.keyboard.type(long); for (let i = 0; i < 150; i++) await page.keyboard.press('Backspace');
+  await expect.poll(typed).toBe(long.slice(0, -150));
+});
+test('invalid or very long input never blanks a page or widens it', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  await page.goto('#/aws');
+  await page.locator('.resource-list').getByRole('button', { name: /^public-a/ }).click();
+  await page.getByRole('textbox', { name: 'サブネットCIDR', exact: true }).fill('10.0.1.0/33');
+  await page.getByRole('textbox', { name: 'サブネットCIDR', exact: true }).press('Enter');
+  await expect(page.locator('.aws-form')).toContainText('CIDRの形式が正しくありません');
+  await page.goto('#/learn/nat-firewall?stage=1');
+  await page.getByRole('textbox', { name: '評価する宛先', exact: true }).fill('');
+  await expect(page.getByRole('textbox', { name: '評価する宛先', exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await page.goto('#/terraform');
+  await page.getByRole('textbox', { name: 'terraform コマンド' }).fill('x'.repeat(300));
+  await page.getByRole('textbox', { name: 'terraform コマンド' }).press('Enter');
+  await expect(page.locator('.tf-output')).toContainText('xxxxxxxxxx');
+  expect(await overflow()).toBeLessThanOrEqual(1);
+  await page.goto('#/lab/design-mastery');
+  expect(await overflow()).toBeLessThanOrEqual(1);
+  await expect(page.getByText('この画面を表示できませんでした')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
 /** Text inside diagram nodes must be the topmost element at its centre, and devices must not overlap. */
 async function diagramProblems(page: Page) {
   return page.evaluate(() => {
@@ -294,7 +314,7 @@ async function diagramProblems(page: Page) {
 }
 test('diagrams: devices never overlap and no text is covered by nodes or lines', async ({ page }) => {
   test.slow(); // 14 diagrams in one test: ~25s alone, more with parallel workers
-  const templates = ['routing', 'vlan', 'l3switch', 'stp', 'ospf', 'dns', 'nat', 'firewall', 'bgp', 'vpn', 'campus'];
+  const templates = ['routing', 'vlan', 'l3switch', 'stp', 'ospf', 'dns', 'nat', 'firewall', 'bgp', 'vpn', 'campus', 'lag', 'ecmp', 'design'];
   for (const url of [...templates.map(t => `#/simulator?template=${t}`), '#/lab/dns-01', '#/lab/nat-01']) {
     await page.goto('about:blank'); await page.goto(url);
     await expect(page.locator('.device-node').first()).toBeVisible();
@@ -362,4 +382,60 @@ test('switching labs quickly keeps each lab\'s own topology', async ({ page }) =
   await expect.poll(ids).toEqual(vlan);
   await page.reload();
   await expect.poll(ids).toEqual(vlan);
+});
+test('link aggregation and ECMP: CLI and canvas share one state, the Debugger and lesson visuals explain each path', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('#/lab/lag-01');
+  for (const [id, mode] of [['SW1', 'active'], ['SW2', 'passive']]) {
+    await selectDevice(page, id);
+    await page.locator('.xterm-helper-textarea').focus();
+    for (const line of ['enable', 'configure terminal', 'interface range g0/7-8', `channel-group 1 mode ${mode}`, 'end']) { await page.keyboard.type(line); await page.keyboard.press('Enter'); }
+  }
+  await expect(page.locator('.react-flow__edge-text', { hasText: 'po1 = 2×1G' })).toBeVisible();
+  await selectDevice(page, 'PC1');
+  await page.locator('.xterm-helper-textarea').focus();
+  await page.keyboard.type('iperf3 -c 192.168.10.13 -P 4'); await page.keyboard.press('Enter');
+  await page.locator('.inspector-tabs button').filter({ hasText: 'Debugger' }).click();
+  await page.getByRole('button', { name: 'Path', exact: true }).click();
+  await expect(page.locator('.hop-table')).toContainText('LAG');
+  await page.getByRole('button', { name: /到達度を確認/ }).click();
+  await expect(page.locator('.assessment')).toContainText('すべての到達条件');
+  await page.goto('#/learn/routing?stage=1');
+  await page.getByRole('combobox', { name: '故障させるリンク' }).selectOption('R2-R4');
+  await expect(page.locator('.flow-table')).toContainText('届かない');
+  await page.getByRole('combobox', { name: '経路の作り方' }).selectOption('ospf');
+  await expect(page.locator('.flow-table')).not.toContainText('届かない');
+  expect(errors).toEqual([]);
+});
+
+test('inspector: a cable selected in one lab is not carried over, and port edits keep focus', async ({ page }) => {
+  await page.goto('#/lab/routing-01');
+  await page.locator('.workspace-canvas').scrollIntoViewIfNeeded();
+  const edge = (await page.locator('.react-flow__edge[data-id="link-1"] .react-flow__edge-interaction').boundingBox())!;
+  await page.mouse.click(edge.x + edge.width / 2, edge.y + edge.height / 2);
+  await expect(page.getByRole('heading', { name: 'リンク', exact: true })).toBeVisible();
+  await page.goto('#/lab/vlan-01');
+  await expect(page.locator('.device-node[data-id], .react-flow__node[data-id="SW1"]').first()).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'リンク', exact: true })).toHaveCount(0);
+  await selectDevice(page, 'SW1');
+  await page.getByRole('button', { name: '機器設定', exact: true }).click();
+  const vlan = page.getByRole('spinbutton', { name: 'g0/1 access VLAN', exact: true });
+  await vlan.click(); await vlan.press('ControlOrMeta+a'); await vlan.pressSequentially('20');
+  await expect(vlan).toHaveValue('20');
+  await expect(vlan).toBeFocused();
+});
+
+test('PC layout: a lab shows its brief beside a workspace that fits the window; navigation opens from the menu', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('#/lab/routing-01');
+  const brief = (await page.locator('.lab-brief').boundingBox())!, workspace = (await page.locator('.workspace').boundingBox())!;
+  expect(brief.x + brief.width).toBeLessThanOrEqual(workspace.x);
+  const terminal = (await page.locator('.workspace-bottom').boundingBox())!;
+  expect(terminal.y + terminal.height).toBeLessThanOrEqual(900);
+  expect((await page.locator('.workspace-canvas .topology').boundingBox())!.height).toBeGreaterThan(250);
+  await expect(page.getByRole('navigation', { name: 'メインナビゲーション' })).toBeHidden();
+  await page.getByRole('button', { name: 'メニュー', exact: true }).click();
+  await page.getByRole('navigation', { name: 'メインナビゲーション' }).getByRole('link', { name: 'ラボ一覧' }).click();
+  await expect(page).toHaveURL(/#\/labs$/);
+  await expect(page.getByRole('navigation', { name: 'メインナビゲーション' })).toBeVisible();  // reading pages keep the sidebar
 });

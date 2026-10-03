@@ -38,6 +38,20 @@ function freePort(table: NatEntry[], protocol: NatEntry['protocol'], global: str
 export function natOutbound(device: DeviceState, packet: Packet, outIface: NetworkInterface, now: number): NatResult | undefined {
   const table = live(device, now);
   const rules = device.nat ?? [];
+  // ICMP errors quote the packet they answer (outside → inside-local): find its entry by the reversed quoted flow, show the inside-global.
+  if (packet.protocol === 'ICMP' && packet.original) {
+    const of = flowKey(packet.original);
+    const entry = of && table.find(e => e.protocol === of.protocol && e.insideLocal === of.destination && e.insideLocalPort === of.destinationPort && e.outside === of.source);
+    const stat = !entry ? rules.find(r => r.type === 'static' && r.inside === packet.original!.destination) : undefined;
+    if (entry || (stat && stat.type === 'static')) {
+      const global = entry ? entry.insideGlobal : (stat as Extract<NatRule, { type: 'static' }>).outside;
+      const original = withDestination(packet.original, global, entry ? entry.insideGlobalPort : undefined);
+      const translated: Packet = { ...packet, source: global, original, quote: encodeIp(original).slice(0, 28) };
+      return { packet: translated, entry: entry ?? { protocol: 'icmp', insideLocal: packet.source, insideLocalPort: 0, insideGlobal: global, insideGlobalPort: 0, outside: packet.destination, outsidePort: 0, rule: natRuleText(stat!), expiresAt: now },
+        before: packet.source, after: global };
+    }
+    return undefined;
+  }
   const flow = flowKey(packet);
   const before = socket(packet.source, flow?.sourcePort);
   const result = (entry: NatEntry): NatResult => {

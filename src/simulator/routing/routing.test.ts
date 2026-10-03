@@ -40,6 +40,14 @@ describe('Link-state routing (OSPF-like)', () => {
     expect(o.neighbors.some(x => x.device === 'R1' && x.neighborDevice === 'R2')).toBe(false);
     expect(o.issues.some(i => i.message.includes('エリア'))).toBe(true);
   });
+  it('E2 externals with equal metric tie-break on cost to the ASBR; each ECMP path names its own ASBR', () => {
+    const n = ospfScenario();
+    for (const [id, nextHop] of [['R2', '10.0.23.2'], ['R4', '10.0.34.2']]) n.update(id, d => { d.ospf!.defaultOriginate = true; d.routes.push({ destination: '0.0.0.0/0', nextHop, preference: 1, metric: 0, kind: 'static' }); });
+    const defaults = () => n.device('R1').dynamicRoutes!.filter(r => r.destination === '0.0.0.0/0').map(r => `${r.nextHop} ${r.info}`);
+    expect(defaults()).toEqual(['10.0.12.2 O*E2 via R2', '10.0.14.2 O*E2 via R4']);
+    n.update('R1', d => { d.interfaces.find(i => i.id === 'g0/1')!.ospfCost = 10; });
+    expect(defaults()).toEqual(['10.0.12.2 O*E2 via R2']);
+  });
   it('does not route without OSPF', () => expect(ospfScenario(false).ping('PC1', '192.168.3.10').success).toBe(false));
   it('a static route whose next hop goes away falls back to OSPF', () => {
     const n = ospfScenario();
@@ -157,6 +165,14 @@ describe('VPN (route-based IPsec)', () => {
     expect(n.device('CGW').tunnelStatus?.tunnel1).toMatchObject({ up: false });
     expect(n.device('CGW').tunnelStatus?.tunnel1.reason).toContain('PSK');
     expect(n.ping('PC1', '10.0.1.10').success).toBe(false);
+  });
+  it('the IPsec SA needs both ends: a shut peer tunnel or no underlay route back takes our side down too', () => {
+    const n = vpnScenario('static');
+    n.update('VGW1', d => { d.interfaces.find(i => i.id === 'tunnel1')!.up = false; });
+    expect(n.device('CGW').tunnelStatus?.tunnel1.up).toBe(false);
+    expect(resolveRoute(n.device('CGW'), '10.0.1.10')?.iface.id).toBe('g0/1');
+    n.update('VGW1', d => { d.interfaces.find(i => i.id === 'tunnel1')!.up = true; d.routes = d.routes.filter(r => r.destination !== '0.0.0.0/0'); });
+    expect(n.device('CGW').tunnelStatus?.tunnel1.up).toBe(false);
   });
   it('comes up when the tunnel destination is reachable only through OSPF', () => {
     const n = vpnScenario('static');

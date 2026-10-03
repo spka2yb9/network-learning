@@ -21,6 +21,9 @@ const hex = (n: number) => ((n * 2654435761) >>> 0).toString(16).padStart(8, '0'
 const same = (a: Value, b: Value) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const NOTE = '（教育用シミュレーション: 実際の Terraform CLI / AWS Provider の出力ではありません）';
 /** Any thrown error as a diagnostic, so a bad expression never makes a command silently do nothing. */
+/** Flags each command honours; anything else is rejected, not ignored (destroy -target=... must not destroy everything). */
+const FLAGS = new Map<string, string[]>([['init', []], ['fmt', ['-check']], ['validate', []], ['plan', ['-destroy']], ['apply', ['-auto-approve']], ['destroy', ['-auto-approve']], ['import', []], ['state', []], ['output', []], ['show', []], ['graph', []], ['force-unlock', []], ['version', []]]);
+const ARGS: Record<string, number> = { import: 2, state: 2, 'force-unlock': 1 };
 const diagnosticOf = (e: unknown): Diagnostic => e instanceof TfError ? e.diagnostic : e instanceof HclError ? { severity: 'error', summary: e.message.replace(/^[^ ]+ /, ''), pos: e.pos } : { severity: 'error', summary: e instanceof Error ? e.message : String(e) };
 
 interface ModuleInstance { prefix: string; config: ModuleConfig; vars: Record<string, Value>; parent?: ModuleInstance; callPos?: Pos }
@@ -36,7 +39,8 @@ export class TerraformWorkspace {
   initialized: boolean;
   lock?: { id: string; who: string; operation: string };
   pending?: Plan;
-  private pendingFiles = '';
+  /** Files + state serial + cloud counter when the pending plan was made: any change makes it stale. */
+  private pendingKey = '';
   constructor(snapshot?: Partial<WorkspaceSnapshot>) {
     this.files = clone(snapshot?.files ?? { 'main.tf': '' });
     this.state = clone(snapshot?.state ?? { serial: 0, lineage: 'path-lab', resources: {}, outputs: {} });
@@ -52,11 +56,14 @@ export class TerraformWorkspace {
     const args = line.trim().replace(/^terraform\s+/, '').split(/\s+/).filter(Boolean);
     const [cmd, ...rest] = args;
     try {
+      const flags = FLAGS.get(cmd);
+      const extra = flags ? [...rest.filter(a => a.startsWith('-') && !flags.includes(a)), ...rest.filter(a => !a.startsWith('-')).slice(ARGS[cmd] ?? 0)] : [];
+      if (extra.length) throw new TfError({ severity: 'error', summary: `このシミュレータでは使えない引数です: ${extra.join(' ')}`, detail: `terraform ${cmd} で使えるオプション: ${flags!.join(' ') || 'なし'}\n-target や -var などのオプションには対応していません。指定を無視して実行すると意図しない変更になるため、実行を止めました。` });
       switch (cmd) {
         case 'init': return this.init();
         case 'fmt': return this.fmt(rest.includes('-check'));
         case 'validate': return this.validate();
-        case 'plan': return this.planText();
+        case 'plan': return this.planText(rest.includes('-destroy'));
         case 'apply': return rest.includes('-auto-approve') ? this.applyText() : this.applyPrompt();
         case 'destroy': return rest.includes('-auto-approve') ? this.applyText(true) : this.applyPrompt(true);
         case 'import': return this.import(rest[0], rest[1]);
@@ -103,16 +110,16 @@ export class TerraformWorkspace {
     const errors = diags.filter(d => d.severity === 'error');
     return errors.length ? formatDiagnostics(diags) : `${formatDiagnostics(diags.filter(d => d.severity === 'warning'))}Success! The configuration is valid.\n${NOTE}`;
   }
-  planText() {
+  planText(destroy = false) {
     this.requireInit(); this.requireLock();
-    const plan = this.buildPlan('plan');
+    const plan = this.buildPlan(destroy ? 'destroy' : 'plan');
     return renderPlan(plan);
   }
   applyPrompt(destroy = false) {
     this.requireInit(); this.requireLock();
     const plan = this.buildPlan(destroy ? 'destroy' : 'plan');
     if (plan.diagnostics.some(d => d.severity === 'error')) return renderPlan(plan);
-    this.pending = plan; this.pendingFiles = JSON.stringify(this.files);
+    this.pending = plan; this.pendingKey = this.planKey();
     const n = plan.changes.filter(c => c.action !== 'noop').length;
     return `${renderPlan(plan)}${n ? `\nDo you want to perform these actions?\n  Terraform will perform the actions described above.\n  Only 'yes' will be accepted to approve.\n（この画面では、上に表示された「yes: 実行する」ボタンで承認します）` : ''}`;
   }
@@ -122,10 +129,11 @@ export class TerraformWorkspace {
     if (!approved) return 'Apply cancelled.';
     try {
       this.requireLock();
-      if (JSON.stringify(this.files) !== this.pendingFiles) throw new TfError({ severity: 'error', summary: 'Saved plan is stale', detail: 'plan を表示した後に、コードが変更されました。表示された plan は古いため、実行しません。\nもう一度 terraform apply を実行し、新しい plan を確認してから承認してください。' });
+      if (this.planKey() !== this.pendingKey) throw new TfError({ severity: 'error', summary: 'Saved plan is stale', detail: 'plan を表示した後に、コードまたは state が変更されました（別の apply など）。表示された plan は古いため、実行しません。\nもう一度 terraform apply を実行し、新しい plan を確認してから承認してください。' });
       return this.execute(plan);
     } catch (e) { return formatDiagnostics([diagnosticOf(e)]); }
   }
+  private planKey() { return JSON.stringify([this.files, this.state.serial, this.cloud.counter]); }
   applyText(destroy = false) {
     this.requireInit(); this.requireLock();
     const plan = this.buildPlan(destroy ? 'destroy' : 'plan');
@@ -155,7 +163,7 @@ export class TerraformWorkspace {
     const [sub, address] = args;
     if (sub === 'list') return Object.keys(this.state.resources).sort().join('\n') || '（state は空です。terraform apply でリソースを作ると、ここに一覧が出ます）';
     if (sub === 'show' && address) { const r = this.state.resources[address]; if (!r) return `No instance found for the given address: ${address}\n（terraform state list で、state にあるアドレスを確認できます）`; return `# ${address}:\nresource "${r.type}" "${address.split('.').at(-1)!.replace(/\[\d+\]$/, '')}" {\n${Object.entries(r.attributes).map(([k, v]) => `    ${k.padEnd(28)} = ${renderValue(v)}`).join('\n')}\n}`; }
-    if (sub === 'rm' && address) { if (!this.state.resources[address]) return `No instance found for the given address: ${address}`; const id = this.state.resources[address].id; delete this.state.resources[address]; this.state.serial++; if (this.cloud.resources[id]) this.cloud.resources[id].origin = 'console'; return `Removed ${address}\nSuccessfully removed 1 resource instance(s).\n（実物は削除されていません。Terraform の管理から外れただけです）`; }
+    if (sub === 'rm' && address) { this.requireLock(); if (!this.state.resources[address]) return `No instance found for the given address: ${address}`; const id = this.state.resources[address].id; delete this.state.resources[address]; this.state.serial++; if (this.cloud.resources[id]) this.cloud.resources[id].origin = 'console'; return `Removed ${address}\nSuccessfully removed 1 resource instance(s).\n（実物は削除されていません。Terraform の管理から外れただけです）`; }
     return '使い方: terraform state list | state show <ADDRESS> | state rm <ADDRESS>';
   }
   private outputText() {
@@ -294,7 +302,7 @@ export class TerraformWorkspace {
         out.public_ip = wantPublic ? (previous?.public_ip as string) ?? pool('198.51.100', 100, 'public_ip') : null;
         out.arn = arn('instance'); break;
       }
-      case 'aws_lb': out.dns_name = `${String(attrs.name ?? 'lb')}-${hex(this.cloud.counter).slice(0, 6)}.ap-northeast-1.elb.amazonaws.com`; out.arn = `arn:aws:elasticloadbalancing:ap-northeast-1:123456789012:loadbalancer/${id}`; break;
+      case 'aws_lb': out.dns_name = (previous?.dns_name as string) ?? `${String(attrs.name ?? 'lb')}-${hex(this.cloud.counter).slice(0, 6)}.ap-northeast-1.elb.amazonaws.com`; out.arn = `arn:aws:elasticloadbalancing:ap-northeast-1:123456789012:loadbalancer/${id}`; break;
       case 'aws_lb_target_group': out.arn = `arn:aws:elasticloadbalancing:ap-northeast-1:123456789012:targetgroup/${id}`; break;
       case 'aws_lb_listener': out.arn = `arn:aws:elasticloadbalancing:ap-northeast-1:123456789012:listener/${id}`; break;
       case 'aws_vpc_peering_connection': out.accept_status = attrs.auto_accept ? 'active' : 'pending-acceptance'; break;
@@ -331,7 +339,7 @@ class Evaluator {
   }
   private rootVars(files: Record<string, string>) {
     const provided: Record<string, Value> = {};
-    for (const [f, src] of Object.entries(files)) if (f.endsWith('.tfvars')) {
+    for (const [f, src] of Object.entries(files)) if (/^(terraform|[^/]*\.auto)\.tfvars$/.test(f)) { // like Terraform: other *.tfvars only via -var-file
       for (const item of parseHcl(src, f)) {
         if (item.kind !== 'attribute') throw new TfError({ severity: 'error', summary: '.tfvars には「変数名 = 値」の形式だけを書けます（ブロックは書けません）', pos: item.pos });
         if (!this.root.config.variables.has(item.name)) throw new TfError({ severity: 'error', summary: `Value for undeclared variable: ${item.name}`, detail: `${item.name} は variable ブロックで宣言されていません。\n変数名の打ち間違いがないか、variable "${item.name}" {} の宣言が抜けていないかを確認してください。`, pos: item.pos });
@@ -426,6 +434,8 @@ class Evaluator {
       }
     };
     for (const e of [...exprs(rc.block.body), ...(rc.count ? [rc.count] : []), ...rc.dependsOn]) visit(inst, e);
+    // depends_on on a module block (and its ancestors) applies to every resource inside it.
+    for (let i = inst; i.parent; i = i.parent) for (const d of [...i.parent.config.modules.values()].find(m => i.prefix.endsWith(`module.${m.name}.`))?.dependsOn ?? []) visit(i.parent, d);
     return [...out].filter(d => !d.includes('.data.') && !d.startsWith('data.'));
   }
   private resource(inst: ModuleInstance, key: string, pos: Pos): Value {
@@ -492,7 +502,7 @@ const constScope = (): Scope => {
   return { vars: {}, local: no('local の値'), resource: no('リソースの値'), module: no('module の値'), path: '' };
 };
 function checkVarType(type: string | undefined, v: Value, name: string, pos: Pos): Value {
-  if (!type || isUnknown(v) || type === 'any') return v;
+  if (!type || isUnknown(v) || v === null || type === 'any') return v;
   const base = type.replace(/\(.*$/, '');
   const ok = base === 'string' ? typeof v === 'string' || typeof v === 'number' : base === 'number' ? typeof v === 'number' : base === 'bool' ? typeof v === 'boolean'
     : base === 'list' || base === 'set' || base === 'tuple' ? Array.isArray(v) : base === 'map' || base === 'object' ? typeof v === 'object' && v !== null && !Array.isArray(v) : true;

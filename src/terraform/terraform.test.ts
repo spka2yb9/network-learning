@@ -7,6 +7,7 @@ import { starterFiles, threeTierFiles } from './examples';
 import { analyzePath } from '../aws/analyzer';
 import { validateModel } from '../aws/model';
 import { terraformLabs } from '../labs/cloud';
+import { terraformTemplates } from '../application/designs';
 
 const ws = (files = starterFiles()) => { const w = new TerraformWorkspace({ files }); w.run('init'); return w; };
 
@@ -25,6 +26,31 @@ describe('HCL subset parser', () => {
     const pos = { line: 1, column: 1, file: 'main.tf' };
     expect(functions.format(['%d%%', 5], pos)).toBe('5%');
     expect(functions.cidrhost(['10.0.0.0/24', -1], pos)).toBe('10.0.0.255');
+  });
+  const pos = { line: 1, column: 1, file: 'main.tf' };
+  it('format supports flags, width and precision and errors on missing arguments', () => {
+    expect(functions.format(['web-%02d|%-3s|%5.1f|%q|%+d', 3, 'a', 3.14159, 'x', 4], pos)).toBe('web-03|a  |  3.1|"x"|+4');
+    expect(() => functions.format(['%s-%s', 'a'], pos)).toThrow(/値がありません/);
+  });
+  it('range supports step and counting down; step 0 is an error', () => {
+    expect([functions.range([1, 10, 2], pos), functions.range([3, 0], pos)]).toEqual([[1, 3, 5, 7, 9], [3, 2, 1]]);
+    expect(() => functions.range([1, 3, 0], pos)).toThrow(/step/);
+  });
+  it('element rejects negative and fractional indexes', () => {
+    expect(() => functions.element([['a', 'b'], -1], pos)).toThrow(/0 以上の整数/);
+    expect(() => functions.element([['a', 'b'], 1.5], pos)).toThrow(/0 以上の整数/);
+  });
+  it('tonumber accepts numbers and numeric strings only', () => {
+    expect([functions.tonumber([' 5 '], pos), functions.tonumber([3], pos), functions.tonumber([null], pos)]).toEqual([5, 3, null]);
+    expect(() => functions.tonumber([''], pos)).toThrow(/tonumber/);
+    expect(() => functions.tonumber([true], pos)).toThrow(/tonumber/);
+  });
+  it('newlines are ignored inside parentheses and call arguments', () => {
+    expect(parseHcl('x = (\n  true\n  ? 1\n  : 2\n)\ny = max(\n  1\n  + 2,\n  merge({\n    a = 1\n    b = 2\n  })\n)\n')).toHaveLength(2);
+  });
+  it('string escapes: \\r, \\u, \\U and unknown escapes are errors', () => {
+    expect(parseHcl('x = "a\\rb\\U0001F600"\n')[0]).toMatchObject({ value: { value: 'a\rb😀' } });
+    expect(() => parseHcl('x = "a\\qb"\n')).toThrow(/エスケープ/);
   });
 });
 
@@ -202,6 +228,12 @@ describe('Terraform workflow (educational engine)', () => {
     expect(Object.keys(w.cloud.resources)).toHaveLength(0);
     expect(w.run('output')).toBe('No outputs found.');
   });
+  it('only terraform.tfvars and *.auto.tfvars are loaded automatically', () => {
+    const w = ws(); w.files['prod.tfvars'] = 'vpc_cidr = "10.8.0.0/16"\n';
+    expect(w.run('plan')).toContain('"10.0.0.0/16"');
+    w.files['prod.auto.tfvars'] = 'vpc_cidr = "10.9.0.0/16"\n';
+    expect(w.run('plan')).toContain('"10.9.0.0/16"');
+  });
   it('tfvars override defaults and undeclared variables are rejected', () => {
     const w = ws();
     w.files['terraform.tfvars'] = 'vpc_cidr = "10.9.0.0/16"\n';
@@ -216,6 +248,58 @@ describe('Terraform workflow (educational engine)', () => {
     const m = w.awsModel();
     const r = analyzePath(m, { kind: 'instance', id: m.instances[0].id }, { kind: 'internet', ip: '198.51.100.10' }, 'tcp', 443);
     expect(r.blocked?.component).toBe('Security Group');
+  });
+  it('a pending plan is stale once the state changes (no duplicate VPC from an old prompt)', () => {
+    const w = ws(); w.run('apply'); w.run('apply -auto-approve');
+    expect(w.confirm(true)).toContain('Saved plan is stale');
+    expect(Object.values(w.cloud.resources).filter(r => r.type === 'aws_vpc')).toHaveLength(1);
+  });
+  it('unsupported flags are rejected, not ignored; plan -destroy previews a destroy', () => {
+    const w = ws(); w.run('apply -auto-approve');
+    expect(w.run('destroy -target=aws_vpc.main -auto-approve')).toContain('使えない引数です: -target=aws_vpc.main');
+    expect(Object.keys(w.cloud.resources)).toHaveLength(1);
+    expect(w.run('plan -destroy')).toContain('Plan: 0 to add, 0 to change, 1 to destroy.');
+  });
+  it('state rm needs the state lock', () => {
+    const w = ws(); w.run('apply -auto-approve'); w.lock = { id: 'a1b2', who: 'teammate@ci', operation: 'OperationTypeApply' };
+    expect(w.run('state rm aws_vpc.main')).toContain('Error acquiring the state lock');
+    expect(w.state.resources['aws_vpc.main']).toBeDefined();
+  });
+  it('a variable default of null is valid for any type', () => {
+    const files = starterFiles(); files['variables.tf'] += '\nvariable "note" {\n  type    = string\n  default = null\n}\n';
+    expect(ws(files).run('validate')).toContain('Success!');
+  });
+  it('a string that is exactly one interpolation keeps the value type', () => {
+    const files = starterFiles(); files['extra.tf'] = 'resource "aws_subnet" "s" {\n  count                   = "${1 + 1}"\n  vpc_id                  = aws_vpc.main.id\n  cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index)\n  map_public_ip_on_launch = "${true}"\n}\n';
+    expect(ws(files).run('plan')).toContain('# aws_subnet.s[1] will be created');
+  });
+  it('an in-place update of an aws_lb keeps its dns_name', () => {
+    const w = ws(threeTierFiles()); w.run('apply -auto-approve'); const before = w.run('output');
+    w.files['compute.tf'] = w.files['compute.tf'].replace('  name               = "web-alb"\n', '  name               = "web-alb"\n  tags               = { Team = "web" }\n');
+    expect(w.run('apply -auto-approve')).toContain('1 changed');
+    expect(w.run('output')).toBe(before);
+  });
+  it('ignore_changes = all ignores every argument', () => {
+    const w = ws(); w.run('apply -auto-approve');
+    w.files['main.tf'] = w.files['main.tf'].replace('Name = "${var.project}-vpc"', 'Name = "renamed"\n  }\n  lifecycle {\n    ignore_changes = all');
+    expect(w.run('plan')).toContain('No changes');
+  });
+  it('depends_on on a module block makes the resources inside depend on it', () => {
+    const w = ws({ 'main.tf': 'resource "aws_vpc" "a" {\n  cidr_block = "10.0.0.0/16"\n}\nmodule "m" {\n  source     = "./m"\n  depends_on = [aws_vpc.a]\n}\n', 'm/main.tf': 'resource "aws_vpc" "b" {\n  cidr_block = "10.1.0.0/16"\n}\n' });
+    w.run('apply -auto-approve');
+    expect(w.state.resources['module.m.aws_vpc.b'].dependencies).toContain('aws_vpc.a');
+  });
+  it('length(concat(...)) of lists with unknown elements is known at plan time', () => {
+    const files = threeTierFiles(); files['extra.tf'] = 'resource "aws_route_table_association" "x" {\n  count          = length(concat(aws_subnet.public[*].id, aws_subnet.app[*].id))\n  subnet_id      = aws_subnet.public[0].id\n  route_table_id = aws_route_table.public.id\n}\n';
+    expect(ws(files).run('plan')).toContain('# aws_route_table_association.x[3] will be created');
+  });
+  it('aws_lb_target_group_attachment port is rejected (per-target ports are not modelled)', () => {
+    const files = threeTierFiles(); files['compute.tf'] = files['compute.tf'].replace('  target_id        = aws_instance.app[count.index].id\n', '  target_id        = aws_instance.app[count.index].id\n  port             = 9090\n');
+    expect(ws(files).run('validate')).toContain('Unsupported argument: "port"');
+  });
+  it('the 3-tier template description matches its files (no DB tier)', () => {
+    expect(terraformTemplates['three-tier'].description).toContain('DBなし');
+    expect(Object.values(threeTierFiles()).join()).not.toMatch(/Role\s*=\s*"db"/);
   });
   it('destroy removes everything in reverse dependency order', () => {
     const w = ws(threeTierFiles()); w.run('apply -auto-approve');
@@ -235,6 +319,15 @@ describe('Terraform workflow (educational engine)', () => {
 });
 
 describe('fmt', () => {
+  it('indents one level per line of net open brackets and is a no-op on canonical examples', () => {
+    const canonical = 'resource "aws_vpc" "a" {\n  tags = merge(local.tags, {\n    Name = "x"\n  })\n}\n';
+    expect(formatHcl(canonical)).toBe(canonical);
+    for (const src of [...Object.values(starterFiles()), ...Object.values(threeTierFiles())]) expect(formatHcl(src)).toBe(src);
+  });
+  it('brackets inside /* */ comments do not change indentation', () => {
+    const src = 'resource "aws_vpc" "a" {\n  x = 1 /* { */\n  /* (\n  [ */\n  y = 2\n}\n';
+    expect(formatHcl(src)).toBe(src);
+  });
   it('re-indents and aligns equals signs', () => {
     expect(formatHcl('resource "aws_vpc" "main" {\ncidr_block = "10.0.0.0/16"\n    enable_dns_hostnames=true\n}\n')).toBe('resource "aws_vpc" "main" {\n  cidr_block           = "10.0.0.0/16"\n  enable_dns_hostnames = true\n}\n');
     const w = ws(); w.files['main.tf'] = w.files['main.tf'].replace('  cidr_block = var.vpc_cidr', 'cidr_block=var.vpc_cidr');

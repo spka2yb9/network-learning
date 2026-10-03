@@ -14,7 +14,7 @@ const fail = (summary: string, pos?: Pos, detail?: string): never => { throw new
 
 export interface Lifecycle { preventDestroy: boolean; createBeforeDestroy: boolean; ignoreChanges: string[] }
 export interface ResourceConfig { mode: 'managed' | 'data'; type: string; name: string; block: Block; count?: Expr; dependsOn: Expr[]; lifecycle: Lifecycle }
-export interface ModuleCall { name: string; source: string; inputs: Attribute[]; block: Block }
+export interface ModuleCall { name: string; source: string; inputs: Attribute[]; dependsOn: Expr[]; block: Block }
 export interface ModuleConfig {
   path: string;
   variables: Map<string, { block: Block; default?: Expr; type?: string }>;
@@ -28,6 +28,7 @@ export interface ModuleConfig {
 
 const attr = (body: Body, name: string) => body.find((x): x is Attribute => x.kind === 'attribute' && x.name === name);
 const blocks = (body: Body, type: string) => body.filter((x): x is Block => x.kind === 'block' && x.type === type);
+const dependsOn = (body: Body) => { const d = attr(body, 'depends_on')?.value; return d?.kind === 'list' ? d.items : d ? [d] : []; };
 
 /** Group files by module directory ("" = root, "modules/vpc" = child) and parse them. */
 export function loadModules(files: Record<string, string>) {
@@ -54,7 +55,7 @@ export function loadModules(files: Record<string, string>) {
         case 'module': dup(m.modules, a, 'module'); {
           const source = attr(item.body, 'source')?.value;
           if (!source || source.kind !== 'literal' || typeof source.value !== 'string') { diagnostics.push({ severity: 'error', summary: `module "${a}" の source は文字列で指定します（例: source = "./modules/network"）`, pos: item.pos }); break; }
-          m.modules.set(a, { name: a, source: source.value, inputs: item.body.filter((x): x is Attribute => x.kind === 'attribute' && !['source', 'version', 'depends_on'].includes(x.name)), block: item });
+          m.modules.set(a, { name: a, source: source.value, inputs: item.body.filter((x): x is Attribute => x.kind === 'attribute' && !['source', 'version', 'depends_on'].includes(x.name)), dependsOn: dependsOn(item.body), block: item });
         } break;
         case 'resource': case 'data': {
           if (item.labels.length !== 2) { diagnostics.push({ severity: 'error', summary: `${item.type} ブロックには型と名前の2つのラベルが必要です（例: ${item.type} "aws_vpc" "main"）`, pos: item.pos }); break; }
@@ -64,9 +65,10 @@ export function loadModules(files: Record<string, string>) {
           const ignore = lc && attr(lc.body, 'ignore_changes')?.value;
           m.resources.set(key, {
             mode: item.type === 'data' ? 'data' : 'managed', type: a, name: b, block: item, count: attr(item.body, 'count')?.value,
-            dependsOn: (() => { const d = attr(item.body, 'depends_on')?.value; return d?.kind === 'list' ? d.items : d ? [d] : []; })(),
+            dependsOn: dependsOn(item.body),
             lifecycle: { preventDestroy: literalBool(lc && attr(lc.body, 'prevent_destroy')?.value), createBeforeDestroy: literalBool(lc && attr(lc.body, 'create_before_destroy')?.value),
-              ignoreChanges: ignore?.kind === 'list' ? ignore.items.map(i => i.kind === 'ref' ? i.root : '').filter(Boolean) : [] },
+              // ignore_changes = all: every argument (and nested block) of the type.
+              ignoreChanges: ignore?.kind === 'ref' && ignore.root === 'all' && !ignore.path.length ? Object.keys({ ...resourceSchema[a]?.attrs, ...resourceSchema[a]?.blocks }) : ignore?.kind === 'list' ? ignore.items.map(i => i.kind === 'ref' ? i.root : '').filter(Boolean) : [] },
           });
           break;
         }
@@ -123,6 +125,8 @@ function applyPath(value: Value, steps: PathStep[], scope: Scope, pos: Pos, labe
   return v;
 }
 const str = (v: Value, pos: Pos): string => typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : fail('文字列に変換できない値です（リストやマップは、そのまま文字列に埋め込めません）', pos);
+/** Strict number conversion: numbers and numeric strings (trimmed) only; "" / bool / null are NaN. */
+const num = (v: Value) => typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN;
 const cidrOf = (fn: string, v: Value, pos: Pos) => { const text = str(v, pos); try { return cidr(text); } catch (e) { return fail(`${fn}: "${text}" は使えません。${(e as Error).message}`, pos); } };
 export const functions: Record<string, (args: Value[], pos: Pos) => Value> = {
   cidrsubnet: ([prefix, newbits, netnum], pos) => {
@@ -134,23 +138,42 @@ export const functions: Record<string, (args: Value[], pos: Pos) => Value> = {
   },
   cidrhost: ([prefix, host], pos) => { const c = cidrOf('cidrhost', prefix, pos); const size = c.broadcast - c.network + 1; const h = Number(host) < 0 ? size + Number(host) : Number(host); if (!Number.isInteger(h) || h < 0 || h >= size) fail('cidrhost: ホスト番号が、このプレフィックスの範囲外です（負の数は末尾から数えます。-1 が最後のアドレス）', pos); return dotted(c.network + h); },
   length: ([v], pos) => Array.isArray(v) ? v.length : typeof v === 'string' ? v.length : v && typeof v === 'object' && !isUnknown(v) ? Object.keys(v).length : fail('length: リスト・文字列・マップを指定します', pos),
-  element: ([list, i], pos) => Array.isArray(list) && list.length ? list[Number(i) % list.length] : fail('element: 空でないリストを指定します', pos),
+  element: ([list, i], pos) => { const n = num(i); if (!Number.isInteger(n) || n < 0) fail('element: 番号（インデックス）には 0 以上の整数を指定します（最後の要素は element(list, length(list) - 1) で取り出します）', pos); return Array.isArray(list) && list.length ? list[n % list.length] : fail('element: 空でないリストを指定します', pos); },
   concat: (args, pos) => args.flatMap(a => Array.isArray(a) ? a : fail('concat: リストを指定します', pos)),
   merge: (args, pos) => Object.assign({}, ...args.map(a => a && typeof a === 'object' && !Array.isArray(a) && !isUnknown(a) ? a : fail('merge: マップを指定します', pos))),
   lookup: ([map, key, dflt], pos) => map && typeof map === 'object' && !Array.isArray(map) ? (map as Record<string, Value>)[str(key, pos)] ?? (dflt === undefined ? fail(`lookup: キー ${key} がありません`, pos) : dflt) : fail('lookup: マップを指定します', pos),
-  format: ([f, ...args], pos) => { let i = 0; return str(f, pos).replace(/%[sd%]/g, m => m === '%%' ? '%' : str(args[i++] ?? '', pos)); },
+  // Go-style verbs (subset): %[flags][width][.precision](d|s|v|q|f) and %%.
+  format: ([f, ...args], pos) => { let i = 0; return str(f, pos).replace(/%([-+ 0]*)(\d*)(?:\.(\d+))?([dsvqf%])/g, (m, flags: string, width: string, prec: string | undefined, verb: string) => {
+    if (verb === '%') return '%';
+    if (i >= args.length) fail(`format: ${m} に対応する値がありません（書式の % の数だけ値を渡します）`, pos);
+    const v = args[i++]; let sign = ''; let body: string;
+    if (verb === 'd' || verb === 'f') {
+      const n = num(v); if (verb === 'd' ? !Number.isInteger(n) : !Number.isFinite(n)) fail(`format: ${m} には${verb === 'd' ? '整数' : '数値'}を渡します`, pos);
+      sign = n < 0 ? '-' : flags.includes('+') ? '+' : flags.includes(' ') ? ' ' : '';
+      body = verb === 'f' ? Math.abs(n).toFixed(prec === undefined ? 6 : Number(prec)) : String(Math.abs(n)).padStart(Number(prec ?? 0), '0');
+    } else { const t = str(v, pos).slice(0, prec === undefined ? undefined : Number(prec)); body = verb === 'q' ? JSON.stringify(t) : t; }
+    const w = Number(width);
+    return flags.includes('-') ? (sign + body).padEnd(w) : flags.includes('0') ? sign + body.padStart(w - sign.length, '0') : (sign + body).padStart(w);
+  }); },
   tostring: ([v], pos) => str(v, pos),
-  tonumber: ([v], pos) => { const n = Number(v); return Number.isFinite(n) ? n : fail('tonumber: 数値に変換できません', pos); },
+  tonumber: ([v], pos) => v === null ? null : Number.isFinite(num(v)) ? num(v) : fail('tonumber: 数値に変換できません（数値か、数字だけの文字列を渡します）', pos),
   upper: ([v], pos) => str(v, pos).toUpperCase(),
   lower: ([v], pos) => str(v, pos).toLowerCase(),
   join: ([sep, list], pos) => Array.isArray(list) ? list.map(x => str(x, pos)).join(str(sep, pos)) : fail('join: リストを指定します', pos),
   slice: ([list, a, b], pos) => Array.isArray(list) ? list.slice(Number(a), Number(b)) : fail('slice: リストを指定します', pos),
-  range: ([a, b], pos) => { const [start, end] = b === undefined ? [0, Number(a)] : [Number(a), Number(b)]; if (!Number.isInteger(start) || !Number.isInteger(end) || end - start > 256) fail('range: 256個までの整数範囲です', pos); return Array.from({ length: Math.max(0, end - start) }, (_, i) => start + i); },
+  range: ([a, b, c], pos) => {
+    const [start, end] = b === undefined ? [0, Number(a)] : [Number(a), Number(b)]; const step = c === undefined ? (start <= end ? 1 : -1) : Number(c);
+    if (![start, end, step].every(Number.isInteger)) fail('range: 整数を指定します', pos);
+    if (step === 0) fail('range: step（増やす量）に 0 は指定できません', pos);
+    const n = Math.max(0, Math.ceil((end - start) / step)); if (n > 256) fail('range: 256個までの整数範囲です', pos);
+    return Array.from({ length: n }, (_, i) => start + i * step);
+  },
 };
 export function evaluate(e: Expr, scope: Scope): Value {
   switch (e.kind) {
     case 'literal': return e.value;
     case 'template': {
+      if (e.parts.length === 1 && typeof e.parts[0] !== 'string') return evaluate(e.parts[0], scope); // "${x}" alone keeps x's type ("${true}" is a bool)
       const parts = e.parts.map(p => typeof p === 'string' ? p : evaluate(p, scope));
       if (parts.some(isUnknown)) return UNKNOWN;
       return parts.map(p => typeof p === 'string' ? p : str(p, e.pos)).join('');
@@ -161,8 +184,8 @@ export function evaluate(e: Expr, scope: Scope): Value {
       const f = functions[e.name];
       if (!f) fail(`Call to unknown function: ${e.name}()（このシミュレータで使える関数: ${Object.keys(functions).join(', ')}）`, e.pos);
       const args = e.args.map(a => evaluate(a, scope));
-      // length() only needs the collection itself to be known (a counted resource's list length is known at plan time).
-      if (e.name === 'length' ? isUnknown(args[0]) : args.some(containsUnknown)) return UNKNOWN;
+      // Shape functions only need the collections themselves to be known (a counted resource's list length is known at plan time).
+      if (['length', 'concat', 'slice', 'element', 'merge', 'lookup'].includes(e.name) ? args.some(isUnknown) : args.some(containsUnknown)) return UNKNOWN;
       return f(args, e.pos);
     }
     case 'unary': {
@@ -242,6 +265,8 @@ export function checkType(spec: AttrSpec, v: Value, name: string, pos: Pos): Val
   if (!ok) fail(`Incorrect attribute value type: "${name}" は ${spec.type} 型です。型に合う値を書いてください`, pos);
   if (spec.type === 'string') return typeof v === 'string' ? v : String(v);
   if (spec.type === 'number') return Number(v);
+  // map = tags, map(string) in the provider: "${count.index}" (a bare number since it is a single interpolation) becomes "0".
+  if (spec.type === 'map') return Object.fromEntries(Object.entries(v as Record<string, Value>).map(([k, x]) => [k, typeof x === 'number' || typeof x === 'boolean' ? String(x) : x]));
   return v;
 }
 /** Evaluate a resource body against its schema. Returns attributes including nested blocks as lists. */

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { CliEngine } from './CliEngine';
 import { build } from '../simulator/scenarios/build';
-import { bgpScenario, dnsScenario, l3SwitchScenario, natScenario, ospfScenario, vlanScenario, vpnScenario } from '../simulator/scenarios/chapters';
+import { bgpScenario, dnsScenario, ecmpScenario, l3SwitchScenario, lagScenario, natScenario, ospfScenario, stpScenario, vlanScenario, vpnScenario } from '../simulator/scenarios/chapters';
+import { diagnose } from '../application/diagnose';
 import { routingScenario } from '../simulator/scenarios/routing';
 
 const run = (cli: CliEngine, id: string, ...lines: string[]) => lines.map(l => cli.execute(id, l)).filter(Boolean).join('\n');
@@ -50,6 +51,11 @@ describe('IOS-style CLI', () => {
     expect(cli.execute('R9', 'show ip interface brief')).toMatch(/g0\/0\.20\s+192\.168\.20\.1/);
     expect(n.ping('PC1', '192.168.20.14').success).toBe(true);
     expect(cli.execute('R9', 'show running-config')).toContain('encapsulation dot1q 20');
+    // A sub-interface created without encapsulation yet never prints "undefined".
+    run(cli, 'R9', 'conf t', 'interface g0/0.30', 'end');
+    expect(cli.execute('R9', 'show running-config')).not.toContain('undefined');
+    expect(cli.execute('R9', 'show interfaces g0/0.30')).toContain('Vlan ID 未設定');
+    expect(cli.execute('PC1', 'ethtool')).toContain('使い方: ethtool');
   });
   it('configures PAT and shows translations', () => {
     const n = natScenario(false);
@@ -138,6 +144,74 @@ describe('IOS-style CLI', () => {
   });
 });
 
+describe('Link aggregation, ECMP and speed via CLI (same Core state as the GUI)', () => {
+  it('interface range → channel-group creates po1; the trunk is set on po1; show etherchannel / interfaces po1', () => {
+    const n = lagScenario(); const cli = new CliEngine(n);
+    const created = run(cli, 'SW1', 'enable', 'conf t', 'interface range g0/7-8', 'channel-group 1 mode active', 'exit', 'interface port-channel 1', 'switchport mode trunk', 'switchport trunk allowed vlan 10,20', 'end');
+    expect(created).toContain('Creating a port-channel interface po1');
+    expect(cli.prompt('SW1')).toBe('SW1#');
+    expect(cli.execute('SW1', 'show etherchannel summary')).toMatch(/po1\(SD\)\s+LACP\s+g0\/7\(s\)\s+g0\/8\(s\)/);
+    expect(cli.execute('SW1', 'show logging')).toContain('%EC-5-L3DONTBNDL2');
+    run(cli, 'SW2', 'enable', 'conf t', 'interface range g0/7 - 8', 'channel-group 1 mode passive', 'end');
+    expect(cli.execute('SW1', 'show etherchannel summary')).toMatch(/po1\(SU\)\s+LACP\s+g0\/7\(P\)\s+g0\/8\(P\)/);
+    expect(n.ping('PC2', '192.168.20.14').success).toBe(true);
+    const po = cli.execute('SW1', 'show interfaces po1');
+    expect(po).toContain('BW 2000000 Kbit/sec');
+    expect(po).toContain('Members in this channel: g0/7 g0/8');
+    expect(cli.execute('SW1', 'show interfaces trunk')).toMatch(/po1\s+on/);
+    expect(cli.execute('SW1', 'show interfaces trunk')).not.toMatch(/g0\/7/);
+    expect(cli.execute('SW1', 'show running-config')).toMatch(/interface g0\/7\n channel-group 1 mode active/);
+    expect(cli.execute('SW1', 'show spanning-tree')).toMatch(/po1\s+Desg FWD/);
+    expect(cli.execute('SW1', 'show interfaces g0/8')).toContain('Member of po1（mode active）: bundled');
+    // A member cannot take its own L2 settings; mixing static and LACP is rejected.
+    expect(run(cli, 'SW1', 'conf t', 'interface g0/7', 'switchport access vlan 10', 'end')).toContain('po1 のメンバー');
+    expect(run(cli, 'SW1', 'conf t', 'interface g0/8', 'channel-group 1 mode on', 'end')).toContain('混在');
+  });
+  it('mode on vs LACP, speed mismatch and load-balance are visible and fixable from the CLI', () => {
+    const n = lagScenario({ lag: true }); const cli = new CliEngine(n);
+    run(cli, 'SW2', 'enable', 'conf t', 'interface range g0/7-8', 'no channel-group', 'channel-group 1 mode on', 'end');
+    expect(cli.execute('SW2', 'show etherchannel summary')).toMatch(/static\s+g0\/7\(s\)/);
+    expect(n.ping('PC1', '192.168.10.13').success).toBe(false);
+    run(cli, 'SW2', 'conf t', 'interface range g0/7-8', 'no channel-group', 'channel-group 1 mode active', 'end');
+    expect(n.ping('PC1', '192.168.10.13').success).toBe(true);
+    expect(run(cli, 'SW1', 'enable', 'conf t', 'interface g0/8', 'speed 100', 'end')).toContain('100 Mbps');
+    expect(cli.execute('SW2', 'show logging')).toContain('%EC-5-CANNOT_BUNDLE2');
+    expect(cli.execute('SW1', 'show interfaces po1')).toContain('BW 1000000 Kbit/sec');
+    run(cli, 'SW1', 'conf t', 'interface g0/8', 'speed 1000', 'exit', 'port-channel load-balance src-dst-mac', 'end');
+    expect(cli.execute('SW1', 'show etherchannel load-balance')).toContain('src-dst-mac');
+    expect(cli.execute('SW1', 'show running-config')).toContain('port-channel load-balance src-dst-mac');
+    run(cli, 'SW1', 'conf t', 'no interface po1', 'end');
+    expect(n.device('SW1').interfaces.some(i => i.channelGroup)).toBe(false);
+  });
+  it('show ip route lists every equal-cost next hop; exact-route explains the per-flow choice; maximum-paths 1 is single-path', () => {
+    const n = ecmpScenario('none'); const cli = new CliEngine(n);
+    run(cli, 'R1', 'enable', 'conf t', 'ip route 10.20.0.0/24 10.0.12.2', 'ip route 10.20.0.0 255.255.255.0 10.0.13.3', 'end');
+    const table = cli.execute('R1', 'show ip route');
+    expect(table).toMatch(/S\s+10\.20\.0\.0\/24\s+\[1\/0\] via 10\.0\.12\.2\n\s+\[1\/0\] via 10\.0\.13\.3/);
+    expect(cli.execute('R1', 'show ip route 10.20.0.10')).toMatch(/\* 10\.0\.12\.2, via g0\/1\n\s+10\.0\.13\.3, via g0\/2/);
+    const routes = [...Array(12).keys()].map(i => cli.execute('R1', `show ip cef exact-route 192.168.1.10 10.20.0.10 tcp ${50000 + i} 80`).split('\n')[0]);
+    expect(new Set(routes).size).toBe(2);
+    expect(cli.execute('R1', 'show ip cef exact-route 192.168.1.10 10.20.0.10 tcp 50000 80').split('\n')[0]).toBe(routes[0]);
+    const o = ecmpScenario('ospf'); const c2 = new CliEngine(o);
+    expect(c2.execute('R1', 'show ip route ospf')).toMatch(/O\s+10\.20\.0\.0\/24\s+\[110\/3\] via 10\.0\.12\.2, g0\/1.*\n\s+\[110\/3\] via 10\.0\.13\.3, g0\/2/);
+    run(c2, 'R1', 'enable', 'conf t', 'router ospf 1', 'maximum-paths 1', 'end');
+    expect(o.installed('R1').filter(r => r.destination === '10.20.0.0/24')).toHaveLength(1);
+    expect(c2.execute('R1', 'show running-config')).toContain(' maximum-paths 1');
+  });
+  it('iperf3 reports the bottleneck rate and per-stream sharing; ethtool shows the speed', () => {
+    const n = lagScenario({ lag: true }); const cli = new CliEngine(n);
+    const one = cli.execute('PC1', 'iperf3 -c 192.168.10.13');
+    expect(one).toMatch(/1\.00 Gbits\/sec/);
+    expect(one).toContain('po1のメンバー');
+    expect(cli.execute('PC1', 'iperf3 -c 192.168.10.13 -P 8')).toMatch(/\[SUM\]\s+0\.00-10\.00\s+sec\s+2\.00 Gbits\/sec/);
+    expect(cli.lastResult?.events.some(e => e.type === 'LAG_HASH')).toBe(true);
+    expect(cli.execute('PC1', 'iperf3 -c 192.168.10.12')).toContain('unable to connect');
+    expect(cli.execute('PC1', 'ethtool eth0')).toContain('Speed: 10000Mb/s');
+    cli.execute('PC2', 'iperf3 -s');
+    expect(n.device('PC2').services?.some(s => s.port === 5201)).toBe(true);
+  });
+});
+
 describe('Linux CLI', () => {
   it('dig / nslookup / curl / ss produce realistic output from the simulated state', () => {
     const cli = new CliEngine(dnsScenario());
@@ -222,5 +296,97 @@ describe('Linux CLI', () => {
     expect(cli.execute('PC1', 'nc -w 3 -zv 203.0.113.80 80')).toContain('succeeded');
     expect(cli.execute('PC1', 'traceroute -T -p abc 203.0.113.80')).toContain('ポートは1〜65535');
     expect(cli.execute('WEB', 'systemctl status')).toContain('使い方: systemctl');
+  });
+});
+
+describe('review regressions', () => {
+  it('dig / nslookup report a refusing server as connection refused, not a timeout', () => {
+    const cli = new CliEngine(dnsScenario());
+    expect(cli.execute('PC1', 'dig @203.0.113.80 www.example.com')).toMatch(/^;; communications error to 203\.0\.113\.80#53: connection refused\n;; no servers could be reached/);
+    expect(cli.execute('PC1', 'nslookup www.example.com 203.0.113.80')).toContain('connection refused');
+  });
+  it('no spanning-tree priority resets the priority; cost / portfast stay in interface mode', () => {
+    const n = stpScenario(); const cli = new CliEngine(n);
+    run(cli, 'SW1', 'enable', 'conf t', 'spanning-tree priority 4096', 'no spanning-tree priority 4096');
+    expect(n.device('SW1').stp).toEqual({ enabled: true, priority: 32768 });
+    run(cli, 'SW1', 'no spanning-tree', 'interface g0/1', 'spanning-tree cost 5', 'no spanning-tree cost', 'spanning-tree portfast');
+    expect([cli.prompt('SW1'), n.device('SW1').stp!.enabled, n.device('SW1').interfaces.find(i => i.id === 'g0/1')!.stpCost]).toEqual(['SW1(config-if)#', false, undefined]);
+  });
+  it('no ip route <CIDR> <IF> <next-hop> deletes only that route', () => {
+    const n = routingScenario(true); const cli = new CliEngine(n);
+    run(cli, 'R1', 'enable', 'conf t', 'ip route 10.9.0.0/24 g0/1 10.0.0.2', 'ip route 10.9.0.0/24 10.0.0.2', 'no ip route 10.9.0.0/24 g0/1 10.0.0.2');
+    expect(n.device('R1').routes.filter(r => r.destination === '10.9.0.0/24').map(r => `${r.interfaceId ?? '-'} ${r.nextHop}`)).toEqual(['- 10.0.0.2']);
+  });
+  it('running-config prints ip route <CIDR> <IF> <next-hop>, the form it can be pasted back as', () => {
+    const cli = new CliEngine(routingScenario(true));
+    run(cli, 'R1', 'enable', 'conf t', 'ip route 10.8.0.0/24 g0/1 10.0.0.2', 'end');
+    expect(cli.execute('R1', 'show running-config')).toContain('\nip route 10.8.0.0/24 g0/1 10.0.0.2\n');
+  });
+  it('iptables rejects options it does not implement instead of widening the rule', () => {
+    const n = dnsScenario(); const cli = new CliEngine(n);
+    for (const bad of ['-p tcp -m multiport --dports 22,80', '! -s 10.0.0.0/8', '-p tcp --dport 22 extra']) expect(cli.execute('WEB', `iptables -A INPUT ${bad} -j DROP`)).toContain('未対応');
+    expect(n.device('WEB').firewall?.rules ?? []).toHaveLength(0);
+    expect(cli.execute('WEB', 'iptables -I INPUT 1 -p tcp --destination-port 22 -j ACCEPT')).toBe('');
+  });
+  it('iptables -L -n and nft list ruleset show every match condition', () => {
+    const cli = new CliEngine(dnsScenario());
+    cli.execute('WEB', 'iptables -A INPUT -p tcp --sport 53 -i eth0 -j ACCEPT');
+    expect(cli.execute('WEB', 'iptables -L -n')).toContain('tcp spt:53 in:eth0');
+    expect(cli.execute('WEB', 'nft list ruleset')).toContain('iifname "eth0" meta l4proto tcp tcp sport 53 accept');
+  });
+  it('ip route lists a gateway outside the subnet with the note subnet-ts-02 / linux-ts-02 point to', () => {
+    const n = routingScenario(true); n.configureInterface('PC1', 'eth0', '192.168.10.10/24', true);
+    expect(new CliEngine(n).execute('PC1', 'ip route')).toContain('default via 192.168.1.1 （Next Hopに到達できません）');
+  });
+  it('default and 0.0.0.0/0 are one route; diagnose also sees a static default route', () => {
+    const n = dnsScenario(); const cli = new CliEngine(n);
+    expect(cli.execute('PC1', 'ip route add 0.0.0.0/0 via 192.168.1.1')).toContain('File exists');
+    run(cli, 'PC1', 'ip route del 0.0.0.0/0', 'ip route add 0.0.0.0/0 via 192.168.1.1');
+    expect(cli.execute('PC1', 'ip route').match(/^default/gm)).toHaveLength(1);
+    expect(run(cli, 'PC1', 'ip route del default', 'ip route')).not.toContain('default');
+    n.update('PC1', d => { d.routes.push({ destination: '0.0.0.0/0', nextHop: '192.168.1.1', preference: 1, metric: 0, kind: 'static' }); });
+    expect(diagnose(n.snapshot(), 'PC1', 'https://www.example.com/')[2].ok).toBe(true);
+  });
+  it('ip route replace validates the gateway before removing the old route', () => {
+    const n = dnsScenario(); const cli = new CliEngine(n);
+    expect(run(cli, 'PC1', 'ip route add 10.5.0.0/16 via 192.168.1.1', 'ip route replace 10.5.0.0/16 via bogus')).toContain('%');
+    expect(n.device('PC1').routes).toMatchObject([{ destination: '10.5.0.0/16', nextHop: '192.168.1.1' }]);
+  });
+  it('ip default-gateway needs an address; only no ip default-gateway removes it', () => {
+    const n = vlanScenario(); const cli = new CliEngine(n);
+    expect(run(cli, 'SW1', 'enable', 'conf t', 'ip default-gateway 192.168.10.1', 'ip default-gateway')).toContain('使い方');
+    expect(n.device('SW1').gateway).toBe('192.168.10.1');
+    run(cli, 'SW1', 'no ip default-gateway');
+    expect(n.device('SW1').gateway).toBeUndefined();
+  });
+  it('no ip prefix-list <name> seq <n> removes only that entry', () => {
+    const n = bgpScenario(); const cli = new CliEngine(n);
+    run(cli, 'R1', 'enable', 'conf t', 'ip prefix-list P seq 10 permit 10.0.0.0/8', 'ip prefix-list P seq 20 permit 10.1.0.0/16', 'no ip prefix-list P seq 10');
+    expect(n.device('R1').prefixLists).toMatchObject([{ name: 'P', entries: [{ seq: 20 }] }]);
+  });
+  it('accepts IOS abbreviations (int, shut, sh ip ro, sh ip int b, do wr) and ip link set dev', () => {
+    const n = routingScenario(true); const cli = new CliEngine(n);
+    expect(run(cli, 'R1', 'en', 'conf t', 'int g0/0', 'shut')).toBe('');
+    expect(n.device('R1').interfaces.find(i => i.id === 'g0/0')!.up).toBe(false);
+    expect(run(cli, 'R1', 'no shut', 'do wr', 'end')).toContain('[OK]');
+    expect(cli.execute('R1', 'sh ip ro')).toContain('Codes');
+    expect(cli.execute('R1', 'sh int g0/0')).toContain('g0/0 is up');
+    expect(cli.execute('R1', 'sh ip int b')).toMatch(/g0\/0\s+192\.168\.1\.1\s+up/);
+    cli.execute('PC1', 'ip link set dev eth0 down');
+    expect(n.device('PC1').interfaces[0].up).toBe(false);
+  });
+  it('usage errors instead of "undefined"; attached / clustered option values; ifconfig changes state', () => {
+    const n = dnsScenario(); const cli = new CliEngine(n);
+    expect(cli.execute('PC1', 'ip route get')).toContain('使い方');
+    expect(cli.execute('PC1', 'ping -c2 192.168.1.1')).toContain('2 received');
+    expect(cli.execute('PC1', 'tcpdump -ni eth0 icmp')).toContain('ICMP');
+    expect(cli.execute('PC1', 'curl -X GET http://203.0.113.80/')).not.toMatch(/^curl: \(/);
+    expect(cli.execute('PC1', 'dig +short -t MX example.com')).toBe('10 mail.example.com.');
+    run(cli, 'PC1', 'ifconfig eth0 192.168.1.20 netmask 255.255.255.0', 'ifconfig eth0 down');
+    expect(n.device('PC1').interfaces[0]).toMatchObject({ address: '192.168.1.20/24', up: false });
+    const r = new CliEngine(ospfScenario()); run(r, 'R1', 'enable', 'conf t', 'ip route 0.0.0.0/0 10.0.12.2', 'end');
+    expect(r.execute('R1', 'show ip route connected')).toContain('Gateway of last resort is 10.0.12.2');
+    expect(r.execute('R1', 'show ip route foo')).toContain('%');
+    expect(run(r, 'R1', 'conf t', 'router ospf 1', 'router-id')).toContain('使い方');
   });
 });

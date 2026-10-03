@@ -91,6 +91,12 @@ describe('VLAN', () => {
     n.setLinkState('link-1', true);
     expect(n.ping('PC2', '10.10.10.11').success).toBe(true);
   });
+  it('an SVI whose VLAN is not in the VLAN database is line-down', () => {
+    const n = l3SwitchScenario();
+    n.update('L3SW', d => { d.vlans = d.vlans!.filter(v => v.id !== 10); });
+    expect(n.device('L3SW').lineDown).toContain('vlan10');
+    expect(n.installed('L3SW').map(r => r.destination)).toEqual(['10.10.20.0/24']);
+  });
   it('parses and formats VLAN lists', () => {
     expect(parseVlanList('10,20,30-32')).toEqual([10, 20, 30, 31, 32]);
     expect(formatVlanList([10, 11, 12, 20])).toBe('10-12,20');

@@ -13,7 +13,7 @@ export function validateRoute(device: DeviceState, route: Route): Route {
   const destination = cidr(route.destination).canonical;
   if (route.nextHop) ipv4(route.nextHop);
   assert(route.nextHop || route.interfaceId, 'Next Hop または出力ポートが必要です');
-  assert(!route.interfaceId || device.interfaces.some(i => i.id === route.interfaceId), '出力ポートがありません');
+  assert(!route.interfaceId || device.interfaces.some(i => i.id === route.interfaceId), `出力ポート ${route.interfaceId} がありません`);
   assert(isInt(route.preference, 0, 255) && isInt(route.metric, 0, 16_777_215), 'Preference（AD）は0〜255、Metric は0以上の整数です');
   const out: Route = { destination, preference: route.preference, metric: route.metric, kind: 'static' };
   if (route.nextHop) out.nextHop = route.nextHop;
@@ -50,7 +50,7 @@ export function validateDevice(input: DeviceState, others: DeviceState[]): Devic
     ids.add(iface.id);
     assert(typeof iface.up === 'boolean', 'インターフェース状態が不正です');
     const kind = iface.kind ?? 'ethernet';
-    assert(['ethernet', 'subinterface', 'svi', 'tunnel', 'loopback'].includes(kind), 'インターフェース種別が不正です');
+    assert(['ethernet', 'subinterface', 'svi', 'tunnel', 'loopback', 'port-channel'].includes(kind), 'インターフェース種別が不正です');
     assert(typeof iface.mac === 'string' && /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(iface.mac) && !(parseInt(iface.mac.slice(0, 2), 16) & 1), `ユニキャストMACが不正です: ${iface.id}`);
     assert(!foreignMacs.has(iface.mac), `MACアドレスが他の機器と重複しています: ${iface.mac}`);
     if (kind === 'subinterface') {
@@ -76,14 +76,30 @@ export function validateDevice(input: DeviceState, others: DeviceState[]): Devic
         assert(text(iface.tunnel.psk, 64) && text(iface.tunnel.proposal, 64), 'IKE設定が長すぎます');
       }
     } else assert(iface.tunnel === undefined, 'トンネル設定はトンネルインターフェースのみです');
+    if (kind === 'port-channel') {
+      assert(/^po([1-9]|[1-5]\d|6[0-4])$/.test(iface.id), `Port-channel の名前は po1〜po64 です: ${iface.id}`);
+      assert(switching || forwards, 'Port-channel はスイッチ・ルータ系機器で使用します');
+      assert(device.kind !== 'switch' || iface.switchport, 'L2スイッチの Port-channel は switchport（L2）のみです');
+    }
+    if (iface.channelGroup) {
+      const g = iface.channelGroup; const po = byId.get(`po${g.group}`);
+      assert(kind === 'ethernet', 'channel-group は物理ポートで設定します');
+      assert(isInt(g.group, 1, 64) && ['on', 'active', 'passive'].includes(g.mode), `${iface.id}: channel-group の番号（1〜64）またはモード（on / active / passive）が不正です`);
+      assert(po?.kind === 'port-channel', `${iface.id}: channel-group ${g.group} に対応する interface po${g.group} がありません`);
+      assert(!iface.address, `${iface.id}: LAGのメンバーにはIPアドレスを設定できません。IPアドレスは po${g.group} に設定します`);
+      assert(!!iface.switchport === !!po.switchport, `${iface.id}: メンバーと po${g.group} は、両方L2（switchport）か両方L3（ルーテッド）にそろえます`);
+      const modes = device.interfaces.filter(i => i.channelGroup?.group === g.group).map(i => i.channelGroup!.mode);
+      assert(modes.every(m => m === 'on') || !modes.includes('on'), `po${g.group}: static（mode on）とLACP（active / passive）のメンバーは混在できません`);
+    }
     if (iface.switchport) {
-      assert(switching && kind === 'ethernet', 'switchport はスイッチの物理ポートのみです');
+      assert(switching && (kind === 'ethernet' || kind === 'port-channel'), 'switchport はスイッチの物理ポート・Port-channel のみです');
       const sp = iface.switchport;
       assert(['access', 'trunk'].includes(sp.mode) && validVlan(sp.accessVlan) && validVlan(sp.nativeVlan), 'switchport設定が不正です');
       assert(sp.allowedVlans === 'all' || (Array.isArray(sp.allowedVlans) && sp.allowedVlans.length <= 4094 && sp.allowedVlans.every(validVlan)), 'allowed VLANが不正です');
       assert(!iface.address, 'L2ポート（switchport）にはIPアドレスを設定できません。SVIまたは no switchport を使用します');
     } else if (device.kind === 'switch' && kind === 'ethernet') throw new Error('L2スイッチの物理ポートは switchport（L2ポート）のみです。ルーテッドポートが必要ならL3スイッチを使います');
     if (iface.address) {
+      assert(kind !== 'port-channel' || forwards, 'IPアドレスを持つ Port-channel はルータ・L3スイッチで使用します');
       interfaceAddress(iface.address);
       assert(device.kind !== 'switch' || kind === 'svi', 'L2スイッチのIPアドレスは管理用SVI（interface vlan）に設定します');
     }
@@ -97,6 +113,7 @@ export function validateDevice(input: DeviceState, others: DeviceState[]): Devic
   for (let a = 0; a < addressed.length; a++) for (let b = a + 1; b < addressed.length; b++) {
     assert(!overlaps(addressed[a].address!, addressed[b].address!), `${addressed[b].id} のネットワークが ${addressed[a].id} と重複しています（1台の機器で、同じネットワークを2つのポートには設定できません）`);
   }
+  assert(device.lagLoadBalance === undefined || ['src-dst-mac', 'src-dst-ip', 'src-dst-mixed-ip-port'].includes(device.lagLoadBalance), 'port-channel load-balance は src-dst-mac / src-dst-ip / src-dst-mixed-ip-port です');
   if (device.gateway) ipv4(device.gateway);
   assert(Array.isArray(device.routes) && device.routes.length <= 256, '経路表が不正です');
   const routes = device.routes.map(r => validateRoute(device, r));
@@ -153,6 +170,7 @@ export function validateDevice(input: DeviceState, others: DeviceState[]): Devic
     const o = device.ospf;
     assert(forwards && isInt(o.processId, 1, 65535) && Array.isArray(o.networks) && Array.isArray(o.passive), 'OSPF設定が不正です');
     if (o.routerId) ipv4(o.routerId);
+    assert(o.maximumPaths === undefined || isInt(o.maximumPaths, 1, 16), 'maximum-paths は1〜16です');
     o.networks = o.networks.map(n => { assert(isInt(n.area, 0, 65535), 'OSPFエリアは0〜65535です（簡略化）'); return { prefix: cidr(n.prefix).canonical, area: n.area }; });
     o.passive.forEach(p => assert(device.interfaces.some(i => i.id === p), `passive-interface ${p} がありません`));
   }

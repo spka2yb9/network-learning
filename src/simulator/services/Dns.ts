@@ -31,7 +31,7 @@ export function validateRecord(input: DnsRecord): DnsRecord {
       if (extra !== undefined || !/^\d{1,5}$/.test(pref) || Number(pref) > 65535 || !host) throw new Error('MXは "優先度 ホスト名" の形式です（例: 10 mail.example.com.）');
       value = `${Number(pref)} ${normalizeName(host)}`; break;
     }
-    case 'TXT': value = v.replace(/^"|"$/g, ''); if (value.length > 255 || /[\x00-\x1f"]/.test(value)) throw new Error('TXTは255文字以内の1文字列です'); break;
+    case 'TXT': value = v.replace(/^"|"$/g, ''); if (new TextEncoder().encode(value).length > 255 || /[\x00-\x1f"]/.test(value)) throw new Error('TXTは255バイト（UTF-8）以内の1文字列です'); break;
     case 'SOA': {
       const p = v.split(/\s+/);
       if (p.length !== 7 || p.slice(2).some(n => !/^\d+$/.test(n))) throw new Error('SOAは "mname rname serial refresh retry expire minimum" の形式です');
@@ -56,18 +56,14 @@ export function authoritativeAnswer(zones: DnsZone[], q: DnsQuestion): AuthAnswe
   if (!zone) return undefined;
   const records = zone.records;
   const soa = records.filter(r => r.type === 'SOA' && r.name === zone.origin);
-  // Delegation: the first NS node below the apex on the path to qname.
-  const path: string[] = [];
-  for (let n = q.name; n !== zone.origin && n !== '.'; n = parentName(n)) path.unshift(n);
-  for (const cut of path) {
-    const ns = records.filter(r => r.type === 'NS' && r.name === cut);
-    if (ns.length) {
-      return { aa: false, rcode: 'NOERROR', answer: [], authority: ns, additional: glue(records, ns.map(r => r.value)) };
-    }
-  }
   const answer: DnsRecord[] = [];
   let name = q.name;
   for (let i = 0; i < 8; i++) {
+    // Delegation: the first NS node below the apex on the path to the name. A CNAME target below a cut: the answer so far + referral (step 3b).
+    const path: string[] = [];
+    for (let n = name; n !== zone.origin && n !== '.'; n = parentName(n)) path.unshift(n);
+    const ns = path.map(cut => records.filter(r => r.type === 'NS' && r.name === cut)).find(l => l.length);
+    if (ns) return { aa: answer.length > 0, rcode: 'NOERROR', answer, authority: ns, additional: glue(records, ns.map(r => r.value)) };
     const here = records.filter(r => r.name === name);
     if (!here.length) {
       const nonTerminal = records.some(r => r.name.endsWith(`.${name}`));

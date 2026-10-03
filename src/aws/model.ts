@@ -109,6 +109,7 @@ export function validateModel(m: AwsModel): string[] {
       const target = all.find(x => x.id === r.target);
       check(target, `${rt.name}: 経路のターゲット ${r.target} が見つかりません。存在するIGW・NAT Gatewayなどを指定してください`);
       if (r.target.startsWith('nat-')) check(byId(m.subnets, byId(m.natGateways, r.target)?.subnetId)?.vpcId === rt.vpcId, `${rt.name}: 別のVPCのNAT Gatewayは、経路のターゲットに指定できません`);
+      if (r.target.startsWith('vpce-')) check(byId(m.endpoints, r.target)?.vpcId === rt.vpcId, `${rt.name}: 別のVPCのVPCエンドポイントは、経路のターゲットに指定できません`);
     }
     check(m.routeTables.filter(x => x.vpcId === rt.vpcId && x.main).length === 1 || !rt.main, `${rt.vpcId}: メインルートテーブルは、VPCごとに1つだけです`);
   }
@@ -139,7 +140,8 @@ export function validateModel(m: AwsModel): string[] {
       check(contains(s.cidr, i.privateIp), `${i.name}: ${i.privateIp} はサブネット ${s.cidr} の範囲外です。サブネットの範囲内のアドレスにしてください`);
       check(!reservedAddresses(s.cidr).includes(i.privateIp), `${i.name}: ${i.privateIp} はAWSの予約アドレスです（各サブネットの先頭の4つと最後の1つは使えません）。別のアドレスにしてください`);
     }, `${i.name}: プライベートIPの形式が正しくありません`);
-    check(!used.has(i.privateIp), `${i.name}: プライベートIP ${i.privateIp} が、ほかのインスタンスと重複しています`); used.add(i.privateIp);
+    const ipKey = `${s?.vpcId}|${i.privateIp}`; // private IPs only need to be unique within a VPC
+    check(!used.has(ipKey), `${i.name}: プライベートIP ${i.privateIp} が、同じVPCのほかのインスタンスと重複しています`); used.add(ipKey);
     for (const g of i.securityGroupIds) check(byId(m.securityGroups, g)?.vpcId === s?.vpcId, `${i.name}: セキュリティグループ ${g} が見つからないか、別のVPCのものです。インスタンスと同じVPCのSGを指定してください`);
     if (i.publicIp) safe(() => ipv4(i.publicIp!), `${i.name}: パブリックIPの形式が正しくありません`);
   }

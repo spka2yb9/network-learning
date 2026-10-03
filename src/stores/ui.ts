@@ -12,10 +12,10 @@ interface UIState {
   domainView: boolean;
   saveStatus: 'saved' | 'saving' | 'error';
   notice: string;
-  mobileMenu: boolean;
+  menuOpen: boolean;
   changed: () => void;
 }
 export const useUI = create<UIState>(set => ({
-  revision: 0, selectedDevice: 'PC1', selectedLink: '', selectedEvent: 0, bottomTab: 'terminal', inspectorTab: 'config', domainView: false, saveStatus: 'saved', notice: '', mobileMenu: false,
+  revision: 0, selectedDevice: 'PC1', selectedLink: '', selectedEvent: 0, bottomTab: 'terminal', inspectorTab: 'config', domainView: false, saveStatus: 'saved', notice: '', menuOpen: false,
   changed: () => set(s => ({ revision: s.revision + 1 })),
 }));

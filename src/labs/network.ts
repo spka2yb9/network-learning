@@ -1,6 +1,7 @@
 import { createDevice, NetworkSimulator } from '../simulator/core/NetworkSimulator';
 import type { DeviceState } from '../simulator/core/types';
 import { resolveRoute } from '../simulator/l3/RoutingTable';
+import { cidr, ipOf } from '../simulator/l3/ipv4';
 import { parseRule } from '../simulator/services/FirewallEngine';
 import { routingScenario } from '../simulator/scenarios/routing';
 import { access, build, subinterface, trunk, tunnel } from '../simulator/scenarios/build';
@@ -10,9 +11,9 @@ import { grader } from './grade';
 import type { Diagnosis, NetworkLab } from './types';
 
 export const LAYERS = ['リンク（NIC・ケーブル・インターフェース）', 'IPアドレス・サブネットマスク', 'ARP / L2（スイッチ・VLAN）', 'ルーティング（経路・Default Gateway）', 'NAT', 'Firewall / ACL', 'DNS（名前解決）', 'TCP（待ち受けポート）', 'TLS（証明書）', 'アプリケーション（HTTP応答）'];
-const layer = (answer: number, explanation: string): Diagnosis => ({ question: '原因はどの層にありましたか？', options: LAYERS, answer, explanation });
+export const layer = (answer: number, explanation: string): Diagnosis => ({ question: '原因はどの層にありましたか？', options: LAYERS, answer, explanation });
 const route = (d: DeviceState, destination: string, nextHop: string) => d.routes.push({ destination, nextHop, preference: 1, metric: 0, kind: 'static' });
-const ts = (text: string) => `通信できません。原因を特定して直してください。${text}`;
+export const ts = (text: string) => `通信できません。原因を特定して直してください。${text}`;
 
 /** PC1 – R1 – R2 – R3 – PC3 */
 export function chainScenario() {
@@ -32,6 +33,11 @@ function chainSolved(n: NetworkSimulator) {
 const webChecks = (g: ReturnType<typeof grader>) => {
   g.http('PC1 から https://www.example.com/ が表示できる', 'PC1', 'https://www.example.com/');
   g.dns('PC1 で www.example.com が 203.0.113.80 に名前解決される', 'PC1', 'www.example.com', '203.0.113.80');
+};
+/** fw-ts-*: the rest of the policy stays as it was (a broad permit like `permit tcp any any` satisfies the other probes). */
+const policyKept = (g: ReturnType<typeof grader>) => {
+  g.check('DMZ（DMZWEB）から社内へは TCP も届かないまま（拒否）', n => { const r = n.tcpConnect('DMZWEB', '10.0.1.10', 445); return !r.success && !r.refused; });
+  g.tcp('社内（PC1）から DMZ の SSH(22) には接続できないまま（拒否）', 'PC1', '10.0.2.80', 22, false);
 };
 const LINE_BRIEF = 'PC1 – R1 – R2 – R3 – PC3 が一列につながった構成です。R1とR3は両端の拠点のルータ、R2は間を中継するルータです。';
 
@@ -251,18 +257,18 @@ export const networkLabs: NetworkLab[] = [
       return g.done(); },
     debrief: 'Firewallのポリシーは、「誰から・誰へ・どのポートを」許可するかを先に表にしてから書くと、漏れや許可のしすぎに気づきやすくなります。実務のDMZ設計でも、DMZ → 社内は原則拒否にして、被害の範囲を限定します。' },
   { id: 'fw-ts-01', chapter: 'nat-firewall', kind: 'troubleshooting', workspace: 'network', minutes: 15, explain: false, title: '行きは許可、帰りは？', mission: ts('社内からDMZのWebに接続できなくなりました。ルールは変えていないそうです。'),
-    brief: '社内（PC1：10.0.1.10）から DMZのWeb（DMZWEB：10.0.2.80）へのHTTPS接続は、FWのルールで許可されているはずです。\n\nPC1から curl -k https://10.0.2.80/ が成功し、インターネットから社内へは拒否されたまま、FWの既定の動作（default deny）も変えずに直せたら完了です（-k は、証明書の名前が 10.0.2.80 と一致しないため付けます）。',
+    brief: '社内（PC1：10.0.1.10）から DMZのWeb（DMZWEB：10.0.2.80）へのHTTPS接続は、FWのルールで許可されているはずです。\n\nPC1から curl -k https://10.0.2.80/ が成功し、インターネットやDMZから社内へは拒否されたまま（社内からDMZへのSSHも拒否のまま）、FWの既定の動作（default deny）も変えずに直せたら完了です（-k は、証明書の名前が 10.0.2.80 と一致しないため付けます）。',
     hints: ['FWで show firewall を実行します。ルールだけでなく、1行目のモード（mode）も確認します。', 'PC1から curl -k https://10.0.2.80/ を実行し、Debuggerを見ます。SYN（接続の要求）はDMZWEBに届いていますか？ SYN-ACK（応答）はどこで止まりますか？', 'ステートレスなFirewallでは、戻りの通信（DMZWEB → PC1 のSYN-ACK）にも許可ルールが必要です。ステートフルなら戻りは自動で許可されます。モードは firewall mode stateful|stateless で切り替えます。'],
     build: () => { const n = firewallScenario(true); n.update('FW', d => { d.firewall!.stateful = false; }); return n; }, solve: n => n.update('FW', d => { d.firewall!.stateful = true; }),
-    grade: s => { const g = grader(s); g.http('社内（PC1）から DMZのWeb に HTTPS で接続できる', 'PC1', 'https://10.0.2.80/', true, true); g.ping('インターネット（EXT）から社内へは ping が届かないまま（拒否）', 'EXT', '10.0.1.10', false); g.check('FWの既定の動作は default deny のまま', n => n.device('FW').firewall!.defaultAction === 'deny'); g.ping('DMZ（DMZWEB）から社内へは ping が届かないまま（拒否）', 'DMZWEB', '10.0.1.10', false); return g.done(); },
+    grade: s => { const g = grader(s); g.http('社内（PC1）から DMZのWeb に HTTPS で接続できる', 'PC1', 'https://10.0.2.80/', true, true); g.ping('インターネット（EXT）から社内へは ping が届かないまま（拒否）', 'EXT', '10.0.1.10', false); g.check('FWの既定の動作は default deny のまま', n => n.device('FW').firewall!.defaultAction === 'deny'); g.ping('DMZ（DMZWEB）から社内へは ping が届かないまま（拒否）', 'DMZWEB', '10.0.1.10', false); policyKept(g); return g.done(); },
     diagnosis: layer(5, 'FWがステートレスに変更されていて、戻りの通信（SYN-ACK）を許可するルールがないため破棄されていました。show firewall の mode stateless と、DebuggerでSYNは届くのにSYN-ACKがFWで止まることで確認できます。'),
     debrief: '「ルールは変えていない」のに通らないときは、ルール以外の設定（モードや既定の動作）も確かめます。ステートフルかどうかで必要なルールの数が大きく変わるため、実務でもFirewallの動作モードは最初に確認する項目です。' },
   { id: 'fw-ts-02', chapter: 'nat-firewall', kind: 'troubleshooting', workspace: 'network', minutes: 12, explain: false, title: '上から順に', mission: ts('新しいルールを追加したら、社内から何も通らなくなりました。'),
-    brief: '社内（10.0.1.0/24）からは、DMZのWeb（HTTPS）とインターネットへの通信が許可されているはずです。\n\nPC1から curl -k https://10.0.2.80/ が成功し、インターネット（198.51.100.50）へpingが届けば完了です。FWはステートフル・既定拒否（default deny）のまま、DMZから社内へは拒否のままにします。まずFWで show firewall を実行し、ルールを確認しましょう。',
+    brief: '社内（10.0.1.0/24）からは、DMZのWeb（HTTPS）とインターネットへの通信が許可されているはずです。\n\nPC1から curl -k https://10.0.2.80/ が成功し、インターネット（198.51.100.50）へpingが届けば完了です。FWはステートフル・既定拒否（default deny）のまま、DMZから社内へ・社内からDMZへのSSHは拒否のままにします。まずFWで show firewall を実行し、ルールを確認しましょう。',
     hints: ['FWで show firewall を実行し、ルールを番号の小さい順に読みます。', 'ルールは上（番号の小さい順）から評価され、最初に一致したもので結果が決まります。社内からの通信に最初に一致するルールはどれですか？', '社内の通信をまとめて拒否するルールが許可ルールより前にあると、それより後の許可ルールは使われません。不要なルールは no firewall rule <番号> で削除します。'],
     build: () => { const n = firewallScenario(true); n.update('FW', d => { d.firewall!.rules.unshift(parseRule(5, 'deny ip 10.0.1.0/24 any'.split(' '))); }); return n; },
     solve: n => n.update('FW', d => { d.firewall!.rules = d.firewall!.rules.filter(r => r.seq !== 5); }),
-    grade: s => { const g = grader(s); g.http('社内（PC1）から DMZのWeb に HTTPS で接続できる', 'PC1', 'https://10.0.2.80/', true, true); g.ping('社内（PC1）からインターネット（198.51.100.50）へ ping が届く', 'PC1', '198.51.100.50'); g.check('FWはステートフル・default deny のまま', n => n.device('FW').firewall!.stateful && n.device('FW').firewall!.defaultAction === 'deny'); g.ping('DMZ（DMZWEB）から社内へは ping が届かないまま（拒否）', 'DMZWEB', '10.0.1.10', false); return g.done(); },
+    grade: s => { const g = grader(s); g.http('社内（PC1）から DMZのWeb に HTTPS で接続できる', 'PC1', 'https://10.0.2.80/', true, true); g.ping('社内（PC1）からインターネット（198.51.100.50）へ ping が届く', 'PC1', '198.51.100.50'); g.check('FWはステートフル・default deny のまま', n => n.device('FW').firewall!.stateful && n.device('FW').firewall!.defaultAction === 'deny'); g.ping('DMZ（DMZWEB）から社内へは ping が届かないまま（拒否）', 'DMZWEB', '10.0.1.10', false); policyKept(g); return g.done(); },
     diagnosis: layer(5, '追加されたルール5の deny ip 10.0.1.0/24 any が、許可ルール（10・30）より先に一致していました。show firewall で、ルール5が先頭にあることで確認できます。'),
     debrief: 'FirewallやACLのルールは「上から順に、最初に一致したもの」で決まります。実務でルールを追加するときは、入れる位置（番号）と、既存のルールとの重なりを必ず確認します。' },
 
@@ -281,7 +287,9 @@ export const networkLabs: NetworkLab[] = [
     },
     grade: s => { const g = grader(s);
       g.check('PCA・PCB（PC）、SWA・SWB（L2スイッチ）、RTR（ルータ）がそろっている', n => [['PCA', 'pc'], ['PCB', 'pc'], ['SWA', 'switch'], ['SWB', 'switch'], ['RTR', 'router']].every(([id, kind]) => { try { return n.device(id).kind === kind; } catch { return false; } }));
-      g.check('PCAが 172.16.1.0/24、PCBが 172.16.2.0/24 のアドレスを持つ', n => n.device('PCA').interfaces[0].address?.startsWith('172.16.1.') === true && n.device('PCB').interfaces[0].address?.startsWith('172.16.2.') === true);
+      g.check('PCAが 172.16.1.0/24、PCBが 172.16.2.0/24 のアドレスを持つ', n => [['PCA', '172.16.1.0/24'], ['PCB', '172.16.2.0/24']].every(([id, net]) => { const a = n.device(id).interfaces[0].address; return !!a && cidr(a).canonical === net; }));
+      // With both PCs in one subnet (e.g. /16) and the switches cabled together, the pings pass without RTR.
+      g.check('PCA・PCBのDefault GatewayがRTRのアドレス（2つのLANの間はRTRを経由する）', n => ['PCA', 'PCB'].every(id => { const gw = n.device(id).gateway; return !!gw && n.device('RTR').interfaces.some(i => ipOf(i.address) === gw); }));
       g.check('PCはスイッチにつながっている（ルータへ直結しない）', n => ['PCA', 'PCB'].every(id => n.snapshot().links.some(l => (l.sourceDevice === id && l.targetDevice.startsWith('SW')) || (l.targetDevice === id && l.sourceDevice.startsWith('SW')))));
       g.check('PCA ↔ PCB が双方向に通信できる', n => n.ping('PCA', n.device('PCB').interfaces[0].address!.split('/')[0]).success && n.ping('PCB', n.device('PCA').interfaces[0].address!.split('/')[0]).success);
       return g.done(); },

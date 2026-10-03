@@ -36,7 +36,7 @@ export function RuleEvaluator() {
     : p.protocol === 'tcp' ? { id: 0, protocol: 'TCP', source: p.source, destination: p.destination, ttl: 64, sourcePort: 50000, destinationPort: Number(p.port), flags: ['SYN'], seq: 0, ack: 0, window: 65535 }
     : { id: 0, protocol: 'UDP', source: p.source, destination: p.destination, ttl: 64, sourcePort: 50000, destinationPort: Number(p.port) };
   const active = rules.filter((_, i) => enabled[i]);
-  const ctx = { inInterface: p.in, outInterface: egressFor(p.destination) };
+  const ctx = { inInterface: p.in, outInterface: valid ? egressFor(p.destination) : 'g0/0' };
   const decision = packet && evaluateRules(active, 'deny', packet, ctx);
   return <div className="visual-card"><div className="tool-heading"><Icon name="firewall"/><div><h3>ファイアウォールのルール評価</h3><p>ルールは上から順に評価され、<strong>最初に一致したもの</strong>で決まります。どれにも一致しなければ、最後の暗黙の拒否（default deny）で止まります。送信元・宛先・ポートを変えたり、ルールのチェックを外したりして、結果の変化を見ましょう。</p></div></div>
     <div className="inline-form"><label>プロトコル<select aria-label="評価するプロトコル" value={p.protocol} onChange={e => setP({ ...p, protocol: e.target.value as 'tcp' })}><option>tcp</option><option>udp</option><option>icmp</option></select></label>

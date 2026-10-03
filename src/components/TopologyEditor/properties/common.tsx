@@ -14,7 +14,8 @@ export function TextApply({ label, value, placeholder, onApply, aria, button = '
   </form>;
 }
 export function Toggle({ on, onChange, labels = ['UP', 'DOWN'], aria }: { on: boolean; onChange: (v: boolean) => void; labels?: [string, string]; aria?: string }) {
-  return <button type="button" aria-label={aria} aria-pressed={on} className={`state-toggle ${on ? 'up' : ''}`} onClick={() => onChange(!on)}><span className={`status-dot ${on ? '' : 'down'}`}/>{on ? labels[0] : labels[1]}</button>;
+  // The accessible name keeps the visible text so voice control ("click UP") still finds the button.
+  return <button type="button" aria-label={aria && `${aria}: ${on ? labels[0] : labels[1]}`} aria-pressed={on} className={`state-toggle ${on ? 'up' : ''}`} onClick={() => onChange(!on)}><span className={`status-dot ${on ? '' : 'down'}`}/>{on ? labels[0] : labels[1]}</button>;
 }
 export function Rows({ rows, empty = 'なし' }: { rows: (string | ReactNode)[][]; empty?: string }) {
   if (!rows.length) return <p className="muted tiny">{empty}</p>;

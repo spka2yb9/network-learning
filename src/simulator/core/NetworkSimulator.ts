@@ -1,9 +1,10 @@
 import {
   forwardingKinds, hostKinds, switchingKinds,
   type AppPayload, type ArpEntry, type Capture, type DeviceKind, type DeviceState, type DnsMessage, type DnsQuestion, type DnsType,
-  type IcmpPacket, type Link, type NetworkInterface, type NetworkSnapshot, type OperationResult, type Packet, type PingResult,
+  type IcmpPacket, type LagStatus, type Link, type NetworkInterface, type NetworkSnapshot, type OperationResult, type Packet, type PingResult,
   type Route, type ServiceConfig, type SimulationEvent, type TcpFlag, type TcpPacket, type TunnelPacket, type UdpPacket,
 } from './types';
+import { flowHash, flowOf, lagHashInput } from './flow';
 import { validateDevice } from './validate';
 import { cidr, contains, ipOf, ipv4, isIpv4 } from '../l3/ipv4';
 import { installedRoutes, l3Up, resolveRoute, routingTable } from '../l3/RoutingTable';
@@ -11,6 +12,7 @@ import { encodeArp, encodeFrame, encodeIp, encodePayload } from '../capture/enco
 import { decodeFrame } from '../capture/decode';
 import { BROADCAST_MAC, defaultSwitchport, egressTag, ingressVlan, vlanAllowed } from '../l2/Vlan';
 import { computeStp, portKey, type StpResult } from '../l2/Stp';
+import { bundled, computeLag, lagId } from '../l2/Lag';
 import { evaluateRules, flowKey, reverseFlow, sameFlow, type CtState, type FilterDecision } from '../services/FirewallEngine';
 import { natInbound, natOutbound } from '../services/Nat';
 import { authoritativeAnswer, normalizeName, resolveIterative, type ResolveStep } from '../services/Dns';
@@ -31,6 +33,10 @@ export interface DnsLookupResult extends OperationResult { message?: DnsMessage;
 export interface HttpStage { layer: 'DNS' | 'TCP' | 'TLS' | 'HTTP'; ok: boolean; detail: string }
 export interface HttpResult extends OperationResult { status?: number; headers?: string; body?: string; stages: HttpStage[]; address?: string }
 export interface TcpResult extends OperationResult { refused?: boolean }
+/** One link a stream crosses. A LAG member counts on its own; `lag` shows the bundle it belongs to. */
+export interface FlowHop { device: string; interfaceId: string; linkId: string; bandwidth: number; lag?: { id: string; capacity: number; members: number } }
+export interface StreamResult { from: string; to: string; port: number; sourcePort?: number; ok: boolean; reason: string; hops: FlowHop[]; limit: number; rate: number; shared: number }
+export interface ThroughputResult extends OperationResult { streams: StreamResult[]; total: number }
 
 const ARP_TTL = 120_000;
 const MAC_AGING = 300_000;
@@ -73,7 +79,7 @@ export class NetworkSimulator {
   }
   snapshot(): NetworkSnapshot {
     const devices = [...this.devices.values()].map(d => {
-      const { macTable: _m, natTable: _n, conntrack: _c, dnsCache: _d, dynamicRoutes: _r, tunnelStatus: _t, sockets: _s, lineDown: _l, ...config } = d;
+      const { macTable: _m, natTable: _n, conntrack: _c, dnsCache: _d, dynamicRoutes: _r, tunnelStatus: _t, sockets: _s, lineDown: _l, lagStatus: _g, ...config } = d;
       return { ...config, arp: [] };
     });
     return structuredClone({ version: 1, devices, links: this.links, time: this.time });
@@ -92,7 +98,7 @@ export class NetworkSimulator {
     if (this.devices.size >= 128) throw new Error('このラボの上限は128機器です');
     if (this.devices.has(device?.id)) throw new Error(`機器名 ${device?.id} はすでに使われています（重複）。別の名前にしてください`);
     const copy = validateDevice(device, [...this.devices.values()]);
-    Object.assign(copy, { arp: [], macTable: [], natTable: [], conntrack: [], dnsCache: [], sockets: [], dynamicRoutes: [], tunnelStatus: {} });
+    Object.assign(copy, { arp: [], macTable: [], natTable: [], conntrack: [], dnsCache: [], sockets: [], dynamicRoutes: [], tunnelStatus: {}, lagStatus: {} });
     this.devices.set(copy.id, copy);
     this.changed();
   }
@@ -161,14 +167,15 @@ export class NetworkSimulator {
       if (same) same.preference = r.preference; else d.routes.push(r);
     });
   }
-  deleteRoute(id: string, destination: string, nextHop?: string) {
+  /** Deletes the static routes to `destination`; a given next hop / interface must match too. */
+  deleteRoute(id: string, destination: string, nextHop?: string, interfaceId?: string) {
     const canonical = cidr(destination).canonical;
     const before = this.mutableDevice(id).routes.length;
-    this.update(id, d => { d.routes = d.routes.filter(r => !(r.destination === canonical && (!nextHop || nextHop === r.nextHop))); });
+    this.update(id, d => { d.routes = d.routes.filter(r => !(r.destination === canonical && (!nextHop || nextHop === r.nextHop) && (!interfaceId || interfaceId === r.interfaceId))); });
     return before !== this.mutableDevice(id).routes.length;
   }
-  table(id: string) { return routingTable(this.mutableDevice(id)); }
-  installed(id: string) { return installedRoutes(this.mutableDevice(id)); }
+  table(id: string) { return structuredClone(routingTable(this.mutableDevice(id))); }
+  installed(id: string) { return structuredClone(installedRoutes(this.mutableDevice(id))); }
   clearArp(id?: string) { for (const d of this.devices.values()) if (!id || d.id === id) d.arp = []; }
   clearMacTable(id?: string) { for (const d of this.devices.values()) if (!id || d.id === id) d.macTable = []; }
   clearNat(id: string) { this.mutableDevice(id).natTable = []; }
@@ -187,6 +194,8 @@ export class NetworkSimulator {
     }
   }
   stpState() { return structuredClone(this.stp); }
+  /** Port-channel state of every device (members bundled / suspended / down). */
+  lagState(): Record<string, Record<string, LagStatus>> { return structuredClone(Object.fromEntries([...this.devices.values()].map(d => [d.id, d.lagStatus ?? {}]))); }
   ospf() { return this.ospfState && structuredClone(this.ospfState); }
   bgp() { return this.bgpState && structuredClone(this.bgpState); }
   /** L3 interfaces that receive a broadcast sent from this interface (the broadcast domain). */
@@ -204,14 +213,18 @@ export class NetworkSimulator {
   }
   private recompute() {
     const devices = [...this.devices.values()];
+    const lag = computeLag(devices, this.links);
     for (const d of devices) {
-      d.dynamicRoutes = []; d.tunnelStatus = {};
-      // Line protocol: a routed port with no cable / a down link / a shut peer loses its connected route.
-      d.lineDown = d.interfaces.filter(i => (i.kind ?? 'ethernet') === 'ethernet' && !i.switchport && !this.carrier(d, i)).map(i => i.id);
+      d.dynamicRoutes = []; d.tunnelStatus = {}; d.lagStatus = lag.get(d.id) ?? {};
+      // Line protocol: a routed port with no cable / a down link / a shut peer loses its connected route; a routed port-channel without bundled members too.
+      d.lineDown = d.interfaces.filter(i => ((i.kind ?? 'ethernet') === 'ethernet' || i.kind === 'port-channel') && !i.switchport && !this.carrier(d, i)).map(i => i.id);
     }
-    this.stp = computeStp(devices, this.links);
-    // SVI line protocol (autostate): up only while an up, STP-forwarding port with carrier carries its VLAN.
-    for (const d of devices) d.lineDown!.push(...d.interfaces.filter(i => i.kind === 'svi' && !d.interfaces.some(p => this.canEgress(d, p, i.vlan!) && this.carrier(d, p))).map(i => i.id));
+    this.stp = computeStp(devices, this.links, (dev, port) => {
+      const d = this.devices.get(dev)!; const g = d.interfaces.find(i => i.id === port)?.channelGroup;
+      return !g ? port : bundled(d, lagId(g.group)).includes(port) ? lagId(g.group) : null;
+    });
+    // SVI line protocol (autostate): up only while its VLAN exists (VLAN 1 always does) and an up, STP-forwarding port with carrier carries it.
+    for (const d of devices) d.lineDown!.push(...d.interfaces.filter(i => i.kind === 'svi' && ((i.vlan !== 1 && !(d.vlans ?? []).some(v => v.id === i.vlan)) || !d.interfaces.some(p => this.canEgress(d, p, i.vlan!) && this.carrier(d, p)))).map(i => i.id));
     // A tunnel's underlay may be learned by OSPF/BGP (which may in turn run over tunnels): repeat until tunnel states settle.
     for (let round = 0, before = ''; round < 3; round++) {
       for (const d of devices) for (const i of d.interfaces) if (i.kind === 'tunnel') d.tunnelStatus![i.id] = this.tunnelCheck(d, i);
@@ -237,6 +250,7 @@ export class NetworkSimulator {
     }
   }
   private carrier(d: DeviceState, iface: NetworkInterface) {
+    if (iface.kind === 'port-channel') return iface.up && !!d.lagStatus?.[iface.id]?.up;
     const link = this.linkAt(d.id, iface.id);
     if (!link || !link.up || !iface.up) return false;
     const [peerId, peerPort] = link.sourceDevice === d.id && link.sourceInterface === iface.id ? [link.targetDevice, link.targetInterface] : [link.sourceDevice, link.sourceInterface];
@@ -246,8 +260,9 @@ export class NetworkSimulator {
     if (iface.ospfCost) return iface.ospfCost;
     if (iface.kind === 'tunnel') return 1000; // IOS default tunnel bandwidth (100 kbit/s)
     if (iface.kind === 'loopback' || iface.kind === 'svi') return 1;
-    const link = this.linkAt(d.id, iface.parent ?? iface.id);
-    return Math.max(1, Math.floor(100 / (link?.bandwidth ?? 1000))); // reference bandwidth 100 Mbit/s
+    const base = iface.parent ?? iface.id;
+    const bandwidth = base.startsWith('po') ? d.lagStatus?.[base]?.capacity : this.linkAt(d.id, base)?.bandwidth;
+    return Math.max(1, Math.floor(100 / (bandwidth || 1000))); // reference bandwidth 100 Mbit/s
   }
   private segmentPeers(d: DeviceState, iface: NetworkInterface) {
     if (iface.kind === 'loopback') return [];
@@ -279,6 +294,10 @@ export class NetworkSimulator {
     const p = peer.iface.tunnel!;
     if (p.mode !== t.mode) return { up: false, reason: `トンネルモードが一致しません（${t.mode} / ${p.mode}）` };
     if (t.mode === 'ipsec') {
+      // IKE needs both ends: the peer tunnel up on an Up source, with an underlay route (not via a tunnel) back to our source.
+      const back = resolveRoute(peer.device, t.source);
+      if (!peer.iface.up || !peer.device.interfaces.some(i => i.kind !== 'tunnel' && l3Up(peer.device, i) && ipOf(i.address) === p.source) || !back || back.iface.kind === 'tunnel')
+        return { up: false, reason: `IKE: ${peer.device.id} から応答がありません（相手の ${peer.iface.id} が shutdown 中か、相手から ${t.source} へ戻るアンダーレイの経路がありません）` };
       if ((t.psk ?? '') !== (p.psk ?? '') || !t.psk) return { up: false, reason: 'IKE: 事前共有鍵（PSK）が一致しない、または未設定のため認証に失敗。両側の tunnel protection psk を確認します' };
       if ((t.proposal ?? 'aes256-sha256') !== (p.proposal ?? 'aes256-sha256')) return { up: false, reason: `IKE: 暗号化提案が一致しません（NO_PROPOSAL_CHOSEN: ${t.proposal} / ${p.proposal}）` };
     }
@@ -306,8 +325,24 @@ export class NetworkSimulator {
   private linkAt(deviceId: string, port: string) {
     return this.links.find(l => (l.sourceDevice === deviceId && l.sourceInterface === port) || (l.targetDevice === deviceId && l.targetInterface === port));
   }
+  /** A cable that is up, or a port-channel with at least one bundled member. */
+  private wired(d: DeviceState, p: NetworkInterface) {
+    return p.kind === 'port-channel' ? !!d.lagStatus?.[p.id]?.up : !!this.linkAt(d.id, p.id)?.up;
+  }
+  /** LAG members are not bridge ports themselves: their port-channel is. */
   private canEgress(sw: DeviceState, p: NetworkInterface, vlan: number) {
-    return p.up && !!p.switchport && vlanAllowed(p.switchport, vlan) && (this.stp.ports.get(portKey(sw.id, p.id))?.forwarding ?? true) && !!this.linkAt(sw.id, p.id)?.up;
+    return p.up && !!p.switchport && !p.channelGroup && vlanAllowed(p.switchport, vlan) && (this.stp.ports.get(portKey(sw.id, p.id))?.forwarding ?? true) && this.wired(sw, p);
+  }
+  /** Pick the bundled member that carries this frame: a hash of the `port-channel load-balance` fields. */
+  private member(d: DeviceState, po: NetworkInterface, frame: Frame, silent: boolean, time: number) {
+    const members = bundled(d, po.id);
+    if (members.length < 2) return members[0];
+    const method = d.lagLoadBalance ?? 'src-dst-mixed-ip-port';
+    const input = lagHashInput(method, frame);
+    const hash = flowHash(input); const chosen = hash % members.length;
+    if (!silent) this.event('LAG_HASH', d, frame.packet, `${po.id}（使用中のメンバー: ${members.join(', ')}）: ${method} のハッシュ入力「${input}」から ${members[chosen]} を選びました。同じ入力のフレームは、いつも同じメンバーを通ります`,
+      { interfaceId: po.id, time, choice: { kind: 'lag', candidates: members, chosen, input, hash } });
+    return members[chosen];
   }
   /**
    * Put a frame on the wire and follow it through switches (learning, VLAN tagging, STP, flooding).
@@ -319,7 +354,12 @@ export class NetworkSimulator {
     const what = frame.arp ? (frame.arp.op === 1 ? 'ARP Request' : 'ARP Reply') : 'Ethernetフレーム';
     let budget = 256;
     if (iface.kind === 'svi') this.bridge(sender, undefined, iface.vlan!, frame, this.time, queue, receivers, silent);
-    else queue.push({ device: sender, port: iface.parent ?? iface.id, tag: iface.kind === 'subinterface' ? iface.vlan : undefined, time: this.time });
+    else {
+      const base = sender.interfaces.find(i => i.id === (iface.parent ?? iface.id))!;
+      const port = base.kind === 'port-channel' ? this.member(sender, base, frame, silent, this.time) : base.id;
+      if (port) queue.push({ device: sender, port, tag: iface.kind === 'subinterface' ? iface.vlan : undefined, time: this.time });
+      else if (!silent) this.event('FRAME_DISCARDED', sender, frame.packet, `${base.id}: 束ねられたメンバーがないため送信できません（show etherchannel summary で確認します）`, { interfaceId: base.id });
+    }
     while (queue.length) {
       const hop = queue.shift()!;
       if (--budget < 0) {
@@ -341,18 +381,27 @@ export class NetworkSimulator {
         this.event('FRAME_SENT', hop.device, frame.packet, `${hop.port} → ${peer.id} ${port.id}: ${what}を送信（MAC ${frame.sourceMac} → ${frame.destinationMac}${hop.tag !== undefined ? `、802.1Qタグ VLAN ${hop.tag}` : ''}）`, { ...common, interfaceId: hop.port, captureId, time: hop.time });
       }
       if (!port.up) { discard(peer, `${port.id} は shutdown（管理的に停止）中のため受信しません`, port.id, arrival); continue; }
-      if (port.switchport && switchingKinds.includes(peer.kind)) {
-        const stp = this.stp.ports.get(portKey(peer.id, port.id));
-        if (stp && !stp.forwarding) { if (!silent) this.event('STP_BLOCKED', peer, frame.packet, `${port.id} はSTPでブロッキング中（役割: ${stp.role}）。ループを防ぐため、このポートで受け取ったフレームは破棄します`, { ...common, interfaceId: port.id, time: arrival }); continue; }
-        const cls = ingressVlan(port.switchport, hop.tag);
-        if ('drop' in cls) { discard(peer, `${port.id}: ${cls.drop}`, port.id, arrival); continue; }
-        if (cls.vlan !== 1 && !(peer.vlans ?? []).some(v => v.id === cls.vlan)) { discard(peer, `${port.id}: VLAN ${cls.vlan} がこのスイッチに作成されていないため破棄（vlan ${cls.vlan} で作成し、show vlan brief で確認します）`, port.id, arrival); continue; }
-        if (!silent) this.event('FRAME_RECEIVED', peer, frame.packet, `${port.id} で受信（VLAN ${cls.vlan}${port.switchport.mode === 'trunk' ? `、トランク${hop.tag === undefined ? '・タグなしのためネイティブVLAN' : ''}` : '、アクセスポート'}）`, { ...common, interfaceId: port.id, captureId, time: arrival });
-        this.bridge(peer, port, cls.vlan, frame, arrival, queue, receivers, silent);
+      // A bundled LAG member hands the frame to its port-channel: from here on, the logical port receives it.
+      let rx = port;
+      if (port.channelGroup) {
+        const po = lagId(port.channelGroup.group);
+        const m = peer.lagStatus?.[po]?.members.find(x => x.port === port.id);
+        if (m?.flag !== 'P') { discard(peer, `${port.id} は ${po} のメンバーとして束ねられていない（${m?.flag === 's' ? 'suspended' : 'down'}: ${m?.reason ?? ''}）ため、受信したフレームを破棄`, port.id, arrival); continue; }
+        rx = peer.interfaces.find(i => i.id === po)!;
+      }
+      const via = rx === port ? port.id : `${port.id}（${rx.id} のメンバー）`;
+      if (rx.switchport && switchingKinds.includes(peer.kind)) {
+        const stp = this.stp.ports.get(portKey(peer.id, rx.id));
+        if (stp && !stp.forwarding) { if (!silent) this.event('STP_BLOCKED', peer, frame.packet, `${rx.id} はSTPでブロッキング中（役割: ${stp.role}）。ループを防ぐため、このポートで受け取ったフレームは破棄します`, { ...common, interfaceId: rx.id, time: arrival }); continue; }
+        const cls = ingressVlan(rx.switchport, hop.tag);
+        if ('drop' in cls) { discard(peer, `${via}: ${cls.drop}`, rx.id, arrival); continue; }
+        if (cls.vlan !== 1 && !(peer.vlans ?? []).some(v => v.id === cls.vlan)) { discard(peer, `${via}: VLAN ${cls.vlan} がこのスイッチに作成されていないため破棄（vlan ${cls.vlan} で作成し、show vlan brief で確認します）`, rx.id, arrival); continue; }
+        if (!silent) this.event('FRAME_RECEIVED', peer, frame.packet, `${via} で受信（VLAN ${cls.vlan}${rx.switchport.mode === 'trunk' ? `、トランク${hop.tag === undefined ? '・タグなしのためネイティブVLAN' : ''}` : '、アクセスポート'}）`, { ...common, interfaceId: port.id, captureId, time: arrival });
+        this.bridge(peer, rx, cls.vlan, frame, arrival, queue, receivers, silent);
         continue;
       }
-      const logical = hop.tag === undefined ? (port.switchport ? undefined : port)
-        : peer.interfaces.find(i => i.kind === 'subinterface' && i.parent === port.id && i.vlan === hop.tag);
+      const logical = hop.tag === undefined ? (rx.switchport ? undefined : rx)
+        : peer.interfaces.find(i => i.kind === 'subinterface' && i.parent === rx.id && i.vlan === hop.tag);
       if (!logical || !logical.up) { discard(peer, hop.tag !== undefined ? `${port.id}: VLAN ${hop.tag} のタグに対応するUpのサブインターフェース（encapsulation dot1q ${hop.tag}）がないため破棄` : `${port.id}: 受信できるインターフェースがありません`, port.id, arrival); continue; }
       if (frame.destinationMac !== BROADCAST_MAC && frame.destinationMac !== logical.mac) { discard(peer, `宛先MAC ${frame.destinationMac} は自分（${logical.mac}）宛てではないため、NICが破棄します`, logical.id, arrival); continue; }
       if (!silent) this.event('FRAME_RECEIVED', peer, frame.packet, frame.packet ? `${logical.id} で受信。Ethernetヘッダを外し、IPの宛先を確認します` : `${logical.id} で${what}を受信`, { ...common, interfaceId: logical.id, captureId, time: arrival });
@@ -376,7 +425,7 @@ export class NetworkSimulator {
     const flood = () => sw.interfaces.filter(p => p.switchport && p.id !== ingress?.id && this.canEgress(sw, p, vlan)).map(p => p.id);
     // Explain trunks / blocked ports that are skipped: the most common "why didn't it arrive?" answer.
     const skipped = () => {
-      const notes = sw.interfaces.filter(p => p.switchport && p.id !== ingress?.id && this.linkAt(sw.id, p.id) && !this.canEgress(sw, p, vlan)).map(p =>
+      const notes = sw.interfaces.filter(p => p.switchport && !p.channelGroup && p.id !== ingress?.id && (p.kind === 'port-channel' || this.linkAt(sw.id, p.id)) && !this.canEgress(sw, p, vlan)).map(p =>
         `${p.id}: ${!vlanAllowed(p.switchport!, vlan) ? (p.switchport!.mode === 'trunk' ? `トランクでVLAN ${vlan} 不許可` : `別VLAN（アクセスVLAN ${p.switchport!.accessVlan}）`) : this.stp.ports.get(portKey(sw.id, p.id))?.forwarding === false ? 'STPブロッキング' : 'Down'}`);
       return notes.length ? `。送らないポート: ${notes.join(' / ')}` : '';
     };
@@ -397,7 +446,8 @@ export class NetworkSimulator {
     for (const id of targets) {
       const p = sw.interfaces.find(i => i.id === id)!;
       if (!this.canEgress(sw, p, vlan)) { if (!silent) this.event('FRAME_DISCARDED', sw, frame.packet, `${id} はVLAN ${vlan} を送信できない状態です（VLAN不許可・STPブロッキング・リンクDownのいずれか）`, { interfaceId: id, time, vlan }); continue; }
-      queue.push({ device: sw, port: id, tag: egressTag(p.switchport!, vlan), time });
+      const port = p.kind === 'port-channel' ? this.member(sw, p, frame, silent, time) : id;
+      if (port) queue.push({ device: sw, port, tag: egressTag(p.switchport!, vlan), time });
     }
   }
   private learn(device: DeviceState, entry: Omit<ArpEntry, 'expiresAt'>) {
@@ -530,8 +580,13 @@ export class NetworkSimulator {
       }
       if (incoming && !forwardingKinds.includes(current.kind)) return this.fail(current, packet, `${current.id} はIPパケットを中継（ルーティング）しない機器です。宛先 ${packet.destination} は自分のアドレスではないため破棄しました`);
       if (incoming && packet.ttl <= 1) return this.fail(current, packet, `${current.id}: TTL exceeded（受信した TTL=${packet.ttl}。1減らすと0になるため転送できず破棄）。TTLを小さくしていないのに起きたら、経路のループを疑います`, { type: 'time-exceeded', code: 0, source: ipOf(incoming.address) });
-      const resolved = resolveRoute(current, packet.destination);
+      const resolved = resolveRoute(current, packet.destination, { flow: flowOf(packet) });
       this.event('ROUTE_LOOKUP', current, packet, this.routeMessage(current, packet, resolved), { route: resolved?.route, interfaceId: resolved?.iface.id });
+      if (resolved?.ecmp) {
+        const { paths, choice } = resolved.ecmp;
+        this.event('ECMP_HASH', current, packet, `ECMP: ${resolved.route.destination} への等コスト経路（同じ AD ${resolved.route.preference}・metric ${resolved.route.metric}）が${paths.length}本あります（${choice.candidates.join(' / ')}）。フロー「${choice.input}」のハッシュで ${choice.chosen + 1}本目の ${choice.candidates[choice.chosen]} を選びました。同じフローはいつも同じ経路を通り、別のフローは別の経路を通ることがあります`,
+          { route: resolved.route, interfaceId: resolved.iface.id, choice });
+      }
       if (!resolved) return this.fail(current, packet, `${current.id}: 宛先 ${packet.destination} への経路がありません（Network unreachable）。${hostKinds.includes(current.kind) ? 'ip route' : 'show ip route'} で、宛先のネットワークか Default Route があるか確認します`, incoming ? { type: 'unreachable', code: 0, source: ipOf(incoming.address) } : undefined);
       const { iface, nextHop } = resolved;
       if (incoming && current.firewall && forwardingKinds.includes(current.kind)) { const d = this.filter(current, packet, { inInterface: incoming.id, outInterface: iface.id }, 'forward'); if (d) return d; }
@@ -553,9 +608,8 @@ export class NetworkSimulator {
         return this.deliver(current, outer, depth + 1);
       }
       if (iface.kind !== 'svi') {
-        const link = this.linkAt(current.id, iface.parent ?? iface.id);
-        const physical = current.interfaces.find(i => i.id === (iface.parent ?? iface.id));
-        if (!link || !link.up || !physical?.up) return this.fail(current, packet, `${current.id} ${iface.id}: Link / Interface Down（shutdown・リンク切断）、またはケーブル未接続のため送信できません`, incoming ? { type: 'unreachable', code: 1, source: ipOf(incoming.address) } : undefined);
+        const base = current.interfaces.find(i => i.id === (iface.parent ?? iface.id));
+        if (!base?.up || !this.wired(current, base)) return this.fail(current, packet, `${current.id} ${iface.id}: Link / Interface Down（shutdown・リンク切断）、またはケーブル未接続のため送信できません`, incoming ? { type: 'unreachable', code: 1, source: ipOf(incoming.address) } : undefined);
       }
       const mac = this.resolveMac(current, iface, nextHop, packet);
       if (!mac) return this.fail(current, packet, `${current.id}: ARP応答なし。Next Hop ${nextHop} からMACアドレスの返事がありません。${nextHop} が同じLANにいるか、相手のIPアドレス・ケーブル・VLANを確認します`, incoming ? { type: 'unreachable', code: 1, source: ipOf(incoming.address) } : undefined);
@@ -623,9 +677,10 @@ export class NetworkSimulator {
       const r = this.finish(result, start);
       const reply = r.reply;
       const marker = reply?.protocol === 'ICMP' && reply.type === 'unreachable' && !(reply.code === 3 && reply.source === destination)
-        ? ({ 0: '!N', 1: '!H', 3: '!P', 13: '!X' } as Record<number, string>)[reply.code ?? 0] ?? '!' : undefined;
+        ? ({ 0: '!N', 1: '!H', 2: '!P', 13: '!X' } as Record<number, string>)[reply.code ?? 0] ?? '!' : undefined;
       probes.push({ ttl, address: reply?.source, marker, result: r });
-      if (r.success || marker || !r.events.some(e => e.type === 'FRAME_SENT')) break;
+      // The destination answered (incl. Port Unreachable from a REJECT): reached, stop.
+      if (r.success || marker || reply?.source === destination || !r.events.some(e => e.type === 'FRAME_SENT')) break;
     }
     return probes;
   }
@@ -713,13 +768,15 @@ export class NetworkSimulator {
     this.event('DNS_RESPONSE', server, undefined, `${server.id}: 再帰解決の結果を返します（${result.rcode}${result.answer.length ? `: ${result.answer.map(r => `${r.type} ${r.value}`).join(', ')}` : ''}）`, { peer: client });
     return { ...base, ra: true, rcode: result.rcode, answer: result.answer, authority: result.authority };
   }
-  private dnsAsk(from: DeviceState, server: string, question: DnsQuestion, rd: boolean): DnsMessage | undefined {
+  private dnsAsk(from: DeviceState, server: string, question: DnsQuestion, rd: boolean, refused?: string[]): DnsMessage | undefined {
     this.dnsId = (this.dnsId * 75 + 74) % 65537 & 0xffff;
     const message: DnsMessage = { id: this.dnsId, response: false, opcode: 0, aa: false, rd, ra: false, rcode: 'NOERROR', question, answer: [], authority: [], additional: [] };
     this.event('DNS_QUERY', from, undefined, `${from.id} → ${server}: ${question.name} ${question.type} ?${rd ? '（再帰要求 RD=1: 最終的な答えまで調べてほしい）' : '（反復問い合わせ RD=0: 知っている範囲で答えてほしい）'}`, { peer: server });
     const r = this.udpExchange(from, server, 53, { kind: 'dns', message });
     const m = r.response?.payload?.kind === 'dns' ? r.response.payload.message : undefined;
-    if (!m) { this.event('DNS_RESPONSE', from, undefined, `${server} から応答がありません（${r.reason}）。タイムアウトまで待ち、次のサーバーがあればそちらへ問い合わせます`, { peer: server }); this.advanceTime(1000); }
+    // ICMP Port Unreachable: refused at once (dig: "connection refused"), no timeout wait.
+    if (!m && r.icmp?.type === 'unreachable' && r.icmp.code === 3) { this.event('DNS_RESPONSE', from, undefined, `${server}#53 から ICMP Port Unreachable（connection refused: 53番で待ち受けがない）。待たずに次のサーバーがあればそちらへ問い合わせます`, { peer: server }); refused?.push(server); }
+    else if (!m) { this.event('DNS_RESPONSE', from, undefined, `${server} から応答がありません（${r.reason}）。タイムアウトまで待ち、次のサーバーがあればそちらへ問い合わせます`, { peer: server }); this.advanceTime(1000); }
     return m;
   }
   /** Stub resolver (`dig` / `nslookup`). `trace` iterates from the root like `dig +trace`. */
@@ -743,11 +800,13 @@ export class NetworkSimulator {
       const message: DnsMessage = { id: 0, response: true, opcode: 0, aa: true, rd: false, ra: false, rcode: result.rcode, question: q, answer: result.answer, authority: result.authority, additional: [] };
       return this.finish({ success: result.rcode === 'NOERROR' && result.answer.length > 0, reason: result.rcode, message, steps: result.steps }, start);
     }
+    const refused: string[] = [];
     for (const server of servers) {
-      const message = this.dnsAsk(origin, server, q, opts.recurse ?? true);
+      const message = this.dnsAsk(origin, server, q, opts.recurse ?? true, refused);
       if (message) return this.finish({ success: message.rcode === 'NOERROR' && message.answer.length > 0, reason: message.rcode, message, server, steps: [] }, start);
     }
-    return this.finish({ success: false, reason: `connection timed out; no servers could be reached（${servers.join(', ')}）`, steps: [] }, start);
+    return this.finish({ success: false, reason: refused.length ? `${refused.map(s => `communications error to ${s}#53: connection refused`).join('; ')}; no servers could be reached`
+      : `connection timed out; no servers could be reached（${servers.join(', ')}）`, steps: [] }, start);
   }
   private resolveHost(origin: DeviceState, host: string): { address?: string; detail: string } {
     if (isIpv4(host)) return { address: host, detail: 'IPアドレス指定のためDNSは使用しません' };
@@ -903,6 +962,54 @@ export class NetworkSimulator {
     const reason = ({ 200: 'OK', 301: 'Moved Permanently', 400: 'Bad Request', 403: 'Forbidden', 404: 'Not Found', 500: 'Internal Server Error', 502: 'Bad Gateway', 503: 'Service Unavailable' } as Record<number, string>)[status] ?? 'Status';
     const length = new TextEncoder().encode(body).length;
     return `HTTP/1.1 ${status} ${reason}\r\nServer: path-sim\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${length}\r\nConnection: close\r\n\r\n${head ? '' : body}`;
+  }
+  /**
+   * Educational capacity model — not a TCP, congestion or queue simulation. Each stream opens a real TCP connection
+   * through the simulated network (so ECMP and LAG hashing pick its path); its ceiling is the slowest link on the
+   * forward path (a LAG member counts as one link), and streams sharing links get a max-min fair share of them.
+   */
+  throughput(streams: { from: string; to: string; port?: number }[]): ThroughputResult {
+    if (!Array.isArray(streams) || streams.length < 1 || streams.length > 32) throw new Error('ストリーム数は1〜32です');
+    const start = this.begin();
+    const results: StreamResult[] = streams.map(s => {
+      const origin = this.mutableDevice(s.from); ipv4(s.to);
+      const port = s.port ?? 5201;
+      const mark = this.events.length;
+      const conn = this.tcpOpen(origin, s.to, port);
+      // The forward path of the last SYN, also for a failed stream (where did it go?).
+      const events = this.events.slice(mark);
+      const syn = events.filter(e => e.type === 'PACKET_CREATED' && e.deviceId === origin.id && e.packet?.protocol === 'TCP' && e.packet.flags.join() === 'SYN').at(-1)?.packet;
+      const hops = events.filter(e => e.type === 'FRAME_SENT' && e.linkId && e.packet?.id === syn?.id).map(e => this.flowHop(e));
+      const sourcePort = syn?.protocol === 'TCP' ? syn.sourcePort : undefined;
+      if ('error' in conn) return { from: s.from, to: s.to, port, sourcePort, ok: false, reason: conn.error, hops, limit: 0, rate: 0, shared: 0 };
+      this.tcpClose(conn);
+      return { from: s.from, to: s.to, port, sourcePort, ok: true, reason: `${s.to}:${port} に接続`, hops, limit: Math.min(...hops.map(h => h.bandwidth)), rate: 0, shared: 1 };
+    });
+    // Max-min fair share (water filling): raise every unfinished stream's rate together until a link is full, freeze the streams on it, repeat.
+    const users = new Map<string, number>(); const left = new Map<string, number>();
+    for (const r of results.filter(x => x.ok)) for (const h of new Map(r.hops.map(x => [x.linkId, x])).values()) { users.set(h.linkId, (users.get(h.linkId) ?? 0) + 1); left.set(h.linkId, h.bandwidth); }
+    let active = results.filter(r => r.ok && r.hops.length);
+    for (const r of active) r.shared = Math.max(...r.hops.map(h => users.get(h.linkId)!));
+    while (active.length) {
+      const count = new Map<string, number>();
+      for (const r of active) for (const id of new Set(r.hops.map(h => h.linkId))) count.set(id, (count.get(id) ?? 0) + 1);
+      const step = Math.min(...[...count].map(([id, c]) => left.get(id)! / c));
+      for (const r of active) { r.rate += step; for (const id of new Set(r.hops.map(h => h.linkId))) left.set(id, left.get(id)! - step); }
+      active = active.filter(r => r.hops.every(h => left.get(h.linkId)! > 1e-6));
+    }
+    // Rounded to 1 kbit/s so comparisons see no floating-point residue; the total is rounded from the exact rates.
+    const round = (x: number) => Math.round(x * 1000) / 1000;
+    const total = round(results.reduce((sum, r) => sum + r.rate, 0));
+    for (const r of results) r.rate = round(r.rate);
+    const failed = results.find(r => !r.ok);
+    return this.finish({ success: !failed, reason: failed?.reason ?? 'ok', streams: results, total }, start);
+  }
+  private flowHop(e: SimulationEvent): FlowHop {
+    const d = this.mutableDevice(e.deviceId);
+    const g = d.interfaces.find(i => i.id === e.interfaceId)?.channelGroup;
+    const lag = g && d.lagStatus?.[lagId(g.group)];
+    return { device: d.id, interfaceId: e.interfaceId!, linkId: e.linkId!, bandwidth: this.links.find(l => l.id === e.linkId)!.bandwidth,
+      ...(g && lag ? { lag: { id: lagId(g.group), capacity: lag.capacity, members: bundled(d, lagId(g.group)).length } } : {}) };
   }
   /** Listening sockets + recent connections for `ss`. */
   sockets(id: string) {

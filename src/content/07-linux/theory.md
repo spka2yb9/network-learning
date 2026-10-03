@@ -535,9 +535,9 @@ iptables -A INPUT -p tcp --dport 443 -j ACCEPT
 博士：さて、クライアントは証明書について、主に3つを確かめる。まず**名前**だ。
 接続に使ったホスト名が、証明書のSAN（Subject Alternative Name、証明書に書かれた名前の一覧）に含まれるか。
 
-ノード：ワイルドカードの `*.example.com` なら、example.com の名前は全部OKですよね？
+ノード：SANに `*.example.com` と書いてあったら、example.com の名前は全部OKですよね？
 
-博士：いや、ワイルドカードは1階層だけに一致する。`www.example.com` には一致するが、`example.com` や `a.b.example.com` には一致しない。
+博士：いや、この `*`（ワイルドカード）は1階層だけに一致する。`www.example.com` には一致するが、`example.com` や `a.b.example.com` には一致しない。
 
 ノード：へぇ、`example.com` 自体にも一致しないんですね。
 
@@ -548,7 +548,7 @@ iptables -A INPUT -p tcp --dport 443 -j ACCEPT
 
 博士：証明書にそのIPが含まれていない限り、名前が一致しない。DNSのところで言った通りだ。
 
-ノード：証明書のエラーが出たら、`curl -k` を付ければ通りますよね。
+ノード：証明書のエラーが出たら、検証を飛ばして通しちゃえばいいんですよね？
 
 博士：`curl -k` は検証を省略する。問題がTLSの段にあると確かめるためだけに使い、解決策にしてはいけない。そこは覚えておきたまえ。
 

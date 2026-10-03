@@ -52,7 +52,7 @@ export function SpfView() {
       <label>R1 g0/0（R2向き）のコスト {cost}<input aria-label="R1 g0/0 のOSPFコスト" type="range" min={1} max={20} value={cost} onChange={e => setCost(Number(e.target.value))}/></label></div>
     <div className="two-col"><div><h4>R1 のネイバー（隣接ルータ）</h4><ul className="plain">{data.neighbors.map(x => <li key={x.interfaceId}>{x.neighborDevice}（{x.neighborId}）via {x.interfaceId} — {x.state}</li>)}</ul>
       <h4>R1 のSPFツリー（R1から各ルータへの最短経路）</h4><table className="mini-table"><thead><tr><th>ルータ</th><th>コスト</th><th>経路</th></tr></thead><tbody>{data.spf.map(s => <tr key={s.routerId}><td>{s.device}</td><td>{s.cost}</td><td>{s.path.join(' → ')}</td></tr>)}</tbody></table></div>
-      <div><h4>R1: 192.168.3.0/24 への経路</h4><ul className="plain">{data.routes.map((r, i) => <li key={i}><code>O {r.destination} [{r.preference}/{r.metric}] via {r.nextHop}</code></li>)}</ul><p className="tiny">コストが等しい経路が複数ある場合、実機のOSPFは複数を同時に使います（ECMP）。このシミュレータは1本だけを選びます。</p>
+      <div><h4>R1: 192.168.3.0/24 への経路</h4><ul className="plain">{data.routes.map((r, i) => <li key={i}><code>O {r.destination} [{r.preference}/{r.metric}] via {r.nextHop}</code></li>)}</ul><p className="tiny">コストが等しい経路が複数ある場合、OSPFはそれらを同時に経路表に入れます（ECMP）。R1–R2とR1–R4のコストが同じなら、上に2行並びます。フローごとの使い分けは、下の「ECMP」ツールで確かめられます。</p>
         <h4>traceroute PC1 → PC3</h4><ol className="plain">{data.hops.map((h, i) => <li key={i}>{h}</li>)}</ol></div></div>
     <p className="muted tiny">教育用の簡略化: 単一エリアのSPFを定常状態で計算します。Hello/DeadタイマーやDR選出、LSAの種類ごとの動作は再現していません。</p></div>;
 }

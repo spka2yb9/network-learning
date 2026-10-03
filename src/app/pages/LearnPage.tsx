@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import Markdown from '../../components/Markdown';
 import { chapterById, curriculum, lessonStages, type Chapter } from '../../lessons/curriculum';
-import { labById, labsFor } from '../../labs';
+import { labById, labPath, labsFor } from '../../labs';
 import { Icon } from '../../components/Icon';
 import LabCard from '../../components/Lab/LabCard';
 import { useUI } from '../../stores/ui';
@@ -38,12 +38,12 @@ function Labs({ chapter, kinds, empty, text }: { chapter: Chapter; kinds: string
 }
 function Lesson({ chapter }: { chapter: Chapter }) {
   const [params, setParams] = useSearchParams();
-  const stage = Math.min(8, Math.max(0, Number(params.get('stage') ?? 0) || 0));
+  const stage = Math.min(8, Math.max(0, Math.trunc(Number(params.get('stage') ?? 0)) || 0));
   const setStage = (s: number) => setParams(s ? { stage: String(s) } : {}, { replace: true });
   useUI(s => s.revision);
   const index = curriculum.indexOf(chapter);
   const done = lab.completed.has(`${chapter.id}-mastery`);
-  const masteryLab = chapter.mastery.type === 'lab' ? labById(chapter.mastery.labId) : undefined;
+  const masteryLabs = chapter.mastery.type === 'lab' ? chapter.mastery.labIds.map(labById).filter(l => !!l) : [];
   return <div className="learn-page"><div className="page-breadcrumb"><Link to="/">学習ホーム</Link><Icon name="chevron" size={12}/><span>{chapter.title}</span></div>
     <div className="page-heading"><div><span className="eyebrow">CHAPTER {String(index + 1).padStart(2, '0')} · {chapter.level}</span><h1>{chapter.title}</h1><p>{chapter.subtitle}。この章では、読む → 動かす → 壊す → 調べる → 直す、をひとつの流れで体験します。</p></div><span className="badge">{done ? '✓ 実技完了' : '学習中'}</span></div>
     <div className="lesson-stage-tabs" role="tablist" aria-label="学習ステップ">{lessonStages.map((name, i) => <button key={name} role="tab" aria-selected={stage === i} className={stage === i ? 'active' : ''} onClick={() => setStage(i)}><span>{String(i + 1).padStart(2, '0')}</span>{name}</button>)}</div>
@@ -57,10 +57,10 @@ function Lesson({ chapter }: { chapter: Chapter }) {
       {stage === 6 && <div className="activity-panel"><span className="eyebrow">PROFESSIONAL NOTES</span><h2>現場で役立つ、もうひとつの視点。</h2><article className="markdown professional"><Markdown>{md(professional, chapter.dir, 'professional')}</Markdown></article></div>}
       {stage === 7 && <Quiz chapter={chapter}/>}
       {stage === 8 && (chapter.mastery.type === 'form' ? <Suspense fallback={<div className="empty-state">読み込み中…</div>}><MasteryForm id={chapter.id}/></Suspense>
-        : <div className="activity-panel"><span className="eyebrow">MASTERY CHECK · FINAL STATE, NOT COMMAND HISTORY</span><h2>自分の構成で、できることを証明する。</h2><p>下のラボの到達条件をすべて満たすと、この章は「実技完了」になります。採点するのは入力したコマンドの履歴ではなく、最終的な構成と通信の結果です。Quizに正解しただけでは修了になりません。</p>{masteryLab && <div className="lab-grid"><LabCard lab={masteryLab}/></div>}{done && <p className="success-text">この章の実技を完了しています。</p>}</div>)}
+        : <div className="activity-panel"><span className="eyebrow">MASTERY CHECK · FINAL STATE, NOT COMMAND HISTORY</span><h2>自分の構成で、できることを証明する。</h2><p>下の{masteryLabs.length > 1 ? `${masteryLabs.length}つの` : ''}ラボの到達条件をすべて満たすと、この章は「実技完了」になります。採点するのは入力したコマンドの履歴ではなく、最終的な構成と通信の結果です。Quizに正解しただけでは修了になりません。</p>{masteryLabs.length > 0 && <div className="lab-grid">{masteryLabs.map(l => <LabCard key={l.id} lab={l}/>)}</div>}{done && <p className="success-text">この章の実技を完了しています。</p>}</div>)}
       <div className="lesson-navigation"><button className="button secondary" disabled={stage === 0} onClick={() => setStage(stage - 1)}>前のステップ</button><span>{stage + 1} / {lessonStages.length}</span><button className="button" disabled={stage === lessonStages.length - 1} onClick={() => setStage(stage + 1)}>次のステップ<Icon name="arrow" size={15}/></button></div>
     </div><aside className="learning-aside"><span className="eyebrow">TODAY'S DESTINATION</span><h3>{chapter.goal}</h3><p>うまくいかなかったら、それが学びの入口。結果だけでなく、そこに至る処理を確認しよう。</p><div className="aside-divider"/><div className="aside-tip"><Icon name="bulb" size={22}/><h4>手を動かすヒント</h4><p>一度に変える設定はひとつ。変更前と変更後を比較すると、原因が見えてきます。</p></div>
-      {labsFor(chapter.id).length > 0 && <div className="aside-labs"><h4>この章のラボ</h4><ul>{labsFor(chapter.id).map(l => <li key={l.id}><Link to={`/${l.workspace === 'network' ? 'lab' : l.workspace === 'capture' ? 'analyzer' : l.workspace}/${l.id}`}>{lab.completed.has(`lab:${l.id}`) ? '✓ ' : ''}{l.title}</Link></li>)}</ul></div>}
+      {labsFor(chapter.id).length > 0 && <div className="aside-labs"><h4>この章のラボ</h4><ul>{labsFor(chapter.id).map(l => <li key={l.id}><Link to={labPath(l)}>{lab.completed.has(`lab:${l.id}`) ? '✓ ' : ''}{l.title}</Link></li>)}</ul></div>}
       <div className="scope-note">すべての通信は教育用シミュレーションです。簡略化している点は各章の「このシミュレータで試せること」に明記しています。</div></aside></div>
   </div>;
 }
