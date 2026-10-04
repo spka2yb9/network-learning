@@ -74,18 +74,17 @@ PC1 → R1 → R2 → PC2をEthernetリンクで接続しています。
 
 - `/#/lab/lag-01`: SW1–SW2の2本のケーブルをLACPで1つの論理リンク（po1）に束ねます。`interface range g0/7-8` → `channel-group 1 mode active`、`show etherchannel summary`。PCで `iperf3 -c 192.168.10.13 -P 4` を実行すると、合計は2本分になり、1本の接続はメンバー1本分のままであることが確かめられます。
 - `/#/lab/ecmp-01`: 同じ宛先への等コストの経路を2本にし、`show ip route` で複数のNext Hop、Debuggerの「Path」表示でフローごとの経路を確認します。`/#/lab/ecmp-ts-01` では、静的ECMPが2つ先の故障に気づかず「一部の接続だけ失敗する」障害を調べます。
-- 第9章のVisualステップ「単一障害点を探す」では、構成ごとに機器・リンクを1つずつ壊して、どこが止まるかと合計の容量をシミュレータで調べます。
 
 ## 画面
 
 | URL | 内容 |
 | --- | --- |
-| `/#/learn/<章>` | 9ステップの教材（Theory / Visual / Playground / Guided Lab / Challenge / Troubleshooting / Professional Notes / Quiz / Mastery Check） |
+| `/#/learn/<章>` | 2タブの教材。Theory（会話形式の本文を1セクション1ページで読む。目次・用語カード・用語のヒント付き、`?section=N`）と Simulation（同じ内容をワークスペースで1ステップずつ組み立て、各ステップを状態から自動判定、`?tab=simulation`） |
 | `/#/simulator`、`/#/lab/<id>` | ネットワークのプレイグラウンドとラボ（トポロジー編集・Terminal・Debugger・Capture・切り分け） |
 | `/#/aws`、`/#/aws/<id>` | AWS VPC Designer（構成図・編集・往復の到達性分析） |
 | `/#/terraform`、`/#/terraform/<id>` | Terraform Lab（HCLサブセット・plan / apply / drift / import / state lock） |
 | `/#/analyzer`、`/#/analyzer/<id>` | Packet Analyzer（PCAP / pcapng の読み込み、デコード、フィルタ、失敗分析） |
-| `/#/labs` | 全74ラボ（Guided 15・Challenge 6・Troubleshooting 36・Mastery 11・Capstone 6） |
+| `/#/labs` | 全86ラボ（各章のSimulation 12・Guided 15・Challenge 6・Troubleshooting 36・Mastery 11・Capstone 6） |
 
 プレイグラウンドと AWS VPC Designer には共通の構成管理があります。「新規作成」では構成名を指定して、機器・接続・AWSリソースがない状態から編集できます（名前はあとからでも可）。「テンプレートを開く」では定義済みの構成を読み込みます。AWSは基本のVPC・Webサーバー・3層構成から選べます。
 
@@ -102,10 +101,10 @@ AWSの構成図とリソース追加ボタンには、AWS Architecture Iconsを�
 - **Capture**: 実際のバイト列（checksum付き）へのエンコード、バイトオフセット付きデコード、BPF風フィルタ（`udp port 53`、`tcp and host 10.0.0.1` など）、PCAP書き出し、PCAP / pcapng読み込み（Ethernet・Linux cooked・raw IP）。
 - **AWS**: VPC・Subnet・Route Table・IGW・NAT GW・SG・NACL・EC2・ALB/NLB・Peering・Gateway Endpoint・VGW の教育用モデルと、往路・復路の両方を評価する到達性分析。
 - **Terraform**: HCLサブセットのparser / evaluator、23種類の`aws_*`リソース・データソース、変数・locals・output・module・count・関数（cidrsubnet等）、plan（create / update / replace / delete）、apply、drift検出、import、state lock、fmt。apply結果はAWSモデルに変換され、構成図と到達性分析に使えます。
-- **学習**: 12章の教材と章ごとの可視化ツール（レイヤー展開、TCPタイムライン、サブネット計算機・VLSM・IPv6、経路検索とSPF、ECMPのフロー振り分けと故障、MAC学習・ブロードキャストドメイン、リンク速度とボトルネック、ポート・モジュールの互換性、LAGのメンバーとフロー、DNS解決とキャッシュ、NAT表・ルール評価、切り分けラダー、LACPとECMPの比較、単一障害点の探索、トンネルのキャプチャ比較、BGPのベストパス、plan差分など）。冗長化・帯域は既存の章（第3章ルーティング・第4章Ethernet/VLAN・第9章ネットワーク構築）に統合し、Capstone 1の要件にも含めています。
-- **Debugger**: イベントの再生（Step）、ホップごとのヘッダ比較（Hop）に加え、LAGのメンバーとECMPのNext Hopを「どのフローがどこへ・なぜ（候補とハッシュの入力）」で一覧する Path 表示。構成図では、束ねたメンバーと使っていないメンバーを色と線種で区別します。Quizと実技（Mastery Check）は別に判定し、実技は最終状態で採点します。
+- **学習**: 12章の教材。Theoryは「わからない言葉を残さない」ことを優先した会話形式の本文で、初出の用語には用語カードを置き、全章の用語カードから作った用語集を本文のホバーと右の「このセクションの用語」に表示します。Simulationは章の例のネットワークを、ネットワーク / AWS / Terraform のワークスペースで1ステップずつ組み立てます（各ステップは最終状態の判定か、観察した結果を答える問い）。書き方は[教材の書き方](docs/content-guide.md)。
+- **Debugger**: イベントの再生（Step）、ホップごとのヘッダ比較（Hop）に加え、LAGのメンバーとECMPのNext Hopを「どのフローがどこへ・なぜ（候補とハッシュの入力）」で一覧する Path 表示。構成図では、束ねたメンバーと使っていないメンバーを色と線種で区別します。
 - **採点**: 全ラボは「開始時は不合格・参考解で合格」をテストで保証しています。Troubleshootingは修復後に「原因の層」を答えて完了。自動診断（切り分けラダー）は完了後の答え合わせとしてだけ使えます。
-- **保存**: 設定・トポロジー・進捗・Quiz・CLI履歴・AWS/Terraformのワークスペースを IndexedDB（Dexie）に自動保存。JSONの書き出し・検証付き読み込み。学習ロードマップ（`/#/roadmap`）から、完了したラボ・実技チェック、Quiz・診断の回答、記録した観察値をまとめてリセットできます（保存した構成、AWS/Terraformのワークスペース、CLI履歴は残ります）。
+- **保存**: 設定・トポロジー・進捗（読んだセクション・Simulationの回答を含む）・CLI履歴・AWS/Terraformのワークスペースを IndexedDB（Dexie）に自動保存。JSONの書き出し・検証付き読み込み。
 
 ## 簡略化と未実装
 
@@ -129,6 +128,7 @@ AWSの構成図とリソース追加ボタンには、AWS Architecture Iconsを�
 ## 設計資料
 
 - [現状・構成・実装順序](docs/architecture.md)
+- [教材の書き方（Theory と Simulation）](docs/content-guide.md)
 - [シミュレーションの対応範囲と制約](docs/simulation-scope.md)
 - [ライブラリ選定と公式資料](docs/dependencies.md)
 - [今後の拡張と受け入れ条件](docs/roadmap.md)

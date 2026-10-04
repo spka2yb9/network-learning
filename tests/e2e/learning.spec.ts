@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { routingSimulation } from '../../src/labs/simulations/routing';
 
 async function selectDevice(page: Page, id: string) {
   await page.getByRole('combobox', { name: '送信元デバイス', exact: true }).selectOption(id);
@@ -79,15 +80,20 @@ test('home, hash deep links and static assets work under a repository subpath', 
   await expect(page.locator('.markdown')).toContainText('カプセル化');
   expect(badResponses).toEqual([]);
 });
-test('switching pages or lesson steps starts at the top', async ({ page }) => {
+test('switching pages or Theory sections starts at the top', async ({ page }) => {
   await page.goto('#/learn/routing');
   await expect(page.locator('.talk').first()).toBeVisible();
-  // Scroll inside the retry: a scroll issued before the step switch has rendered is undone by the reset itself.
+  // Scroll inside the retry: a scroll issued before the section switch has rendered is undone by the reset itself.
   const scrolledToBottom = () => expect.poll(() => page.evaluate(() => { scrollTo(0, document.body.scrollHeight); return scrollY; })).toBeGreaterThan(1000);
   await scrolledToBottom();
-  await page.getByRole('button', { name: '次のステップ' }).click();
+  await page.getByRole('button', { name: /次のセクションへ/ }).click();
   await expect.poll(() => page.evaluate(() => scrollY)).toBe(0);
+  await expect(page.locator('.theory-progress')).toContainText('SECTION 02');
+  await expect(page.locator('.theory-toc li.read')).toHaveCount(1);
+  await page.getByRole('tab', { name: /Simulation/ }).click();
+  await expect(page.locator('.sim-steps')).toBeVisible();
   await page.getByRole('tab', { name: /Theory/ }).click();
+  await expect(page.locator('.theory-progress')).toContainText('SECTION 02');
   await expect(page.locator('.talk').first()).toBeVisible();
   await scrolledToBottom();
   await page.getByRole('navigation', { name: 'カリキュラム' }).getByRole('link', { name: /DNSと名前解決/ }).click();
@@ -95,35 +101,39 @@ test('switching pages or lesson steps starts at the top', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => scrollY)).toBe(0);
 });
 
-test('narrow PC window: reading, subnet calculation, quiz and mastery persistence', async ({ page }) => {
+test('narrow PC window: Theory hints, a Simulation step checked live, and the chapter completed', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 768 }); // the narrowest supported PC window
-  await page.goto('#/learn/subnet');
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('IPアドレス');
-  await page.getByRole('tab', { name: /Visual/ }).click();
-  await page.getByRole('textbox', { name: '計算するCIDR' }).fill('192.168.10.70/27');
-  await expect(page.locator('.subnet-results')).toContainText('192.168.10.64/27');
-  await page.getByRole('textbox', { name: '計算するCIDR' }).fill('192.168.10.70/99');
-  await expect(page.locator('.error-text')).toBeVisible();
-  await page.getByRole('tab', { name: /Quiz/ }).click();
-  await page.getByRole('radio', { name: /192.168.10.94/ }).check();
-  await page.getByRole('button', { name: '回答を確認', exact: true }).click();
-  await expect(page.locator('.quiz-feedback')).toContainText('正解です');
-  await page.getByRole('tab', { name: /Mastery Check/ }).click();
-  const inputs = page.locator('.mastery-form input');
-  await inputs.nth(0).fill('192.168.20.64'); await inputs.nth(1).fill('192.168.20.126'); await inputs.nth(2).fill('62');
-  await page.getByRole('button', { name: /実技回答を確認/ }).click();
-  await expect(page.locator('.success-text')).toBeVisible();
-  // Second half: an address plan graded on its final state (any valid layout passes).
-  for (const [name, value] of [['営業部', '172.20.8.0/24'], ['開発部', '172.20.9.0/25'], ['総務部', '172.20.9.128/26'], ['会議室Wi-Fi', '172.20.9.192/27'], ['管理用', '172.20.9.224/28']]) {
-    await page.getByRole('textbox', { name: `${name} のCIDR` }).fill(value);
-  }
-  await page.getByRole('button', { name: /判定する/ }).click();
-  await expect(page.locator('.assessment .not-passed')).toHaveCount(0);
-  await page.reload();
-  await expect(page.locator('.page-heading .badge')).toContainText('実技完了');
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
-  expect(overflow).toBe(false);
+  const overflow = () => page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+  await page.goto('#/learn/routing');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('ルーティング');
+  const term = page.locator('.theory-page .term').first();
+  await term.hover();
+  await expect(term.locator('.term-tip')).toBeVisible();
+  expect(await overflow()).toBe(false);
   await page.screenshot({ path: 'test-results/lesson-1024.png', fullPage: true });
+  await page.getByRole('tab', { name: /Simulation/ }).click();
+  const first = routingSimulation.sim![0];
+  await expect(page.locator('.sim-step.current')).toContainText(first.title);
+  // Step 1 by GUI: the step is checked from the workspace state, not from what was typed.
+  await selectDevice(page, 'R1');
+  await page.getByRole('button', { name: '機器設定', exact: true }).click();
+  await page.getByRole('textbox', { name: /R1 g0\/0 IPv4/ }).fill('192.168.1.1/24');
+  await page.getByRole('button', { name: 'g0/0 IP設定を適用', exact: true }).click();
+  await expect(page.locator('.sim-step.done')).toHaveCount(1);
+  // The reference build does the configuration; the observation questions are still the learner's.
+  await page.getByRole('button', { name: /完成形/ }).click();
+  await page.getByRole('button', { name: '切り替える', exact: true }).click();
+  for (const step of routingSimulation.sim!.filter(s => s.quiz)) {
+    // The current step is already open; a click on its heading would close it.
+    const head = page.locator('.sim-step-head', { hasText: step.title });
+    if (await head.getAttribute('aria-expanded') !== 'true') await head.click();
+    await page.locator('.sim-quiz .quiz-option', { hasText: step.quiz!.options[step.quiz!.answer] }).click();
+  }
+  await expect(page.locator('.sim-complete')).toBeVisible();
+  await expect(page.locator('.page-heading .badge')).toContainText('完了');
+  await page.reload();
+  await expect(page.locator('.page-heading .badge')).toContainText('完了');
+  expect(await overflow()).toBe(false);
 });
 test('topology: new lab, node addition, IP validation and JSON export', async ({ page }) => {
   await page.goto('#/simulator');
@@ -203,21 +213,16 @@ test('GUI cables bind the selected source and target interfaces', async ({ page 
   await expect(page.locator('.workspace-status')).toContainText('Echo Reply received');
 });
 
-test('every chapter visual renders from the simulator without runtime errors', async ({ page }) => {
+test('every chapter has a Theory and a Simulation that render without runtime errors', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   for (const chapter of ['tcp-ip', 'subnet', 'routing', 'ethernet-vlan', 'dns', 'nat-firewall', 'linux', 'capture', 'topology', 'aws', 'vpn-bgp', 'terraform']) {
-    await page.goto(`#/learn/${chapter}?stage=1`);
-    await expect(page.locator('.visual-card, .journey, .subnet-tool').first()).toBeVisible();
+    await page.goto(`#/learn/${chapter}?section=2`);
+    await expect(page.locator('.theory-page .talk').first()).toBeVisible();
+    await expect(page.locator('.theory-page .callout-summary')).toBeVisible();
+    await page.goto(`#/learn/${chapter}?tab=simulation`);
+    await expect(page.locator('.sim-step.current')).toBeVisible();
+    await expect(page.locator('.workspace, .aws-workspace, .tf-workspace').first()).toBeVisible();
   }
-  await page.goto('#/learn/dns?stage=1');
-  await page.getByRole('button', { name: '問い合わせ', exact: true }).click();
-  await expect(page.locator('.dns-steps')).toContainText('ルートサーバー');
-  await page.getByRole('button', { name: '問い合わせ', exact: true }).click();
-  await expect(page.locator('.dns-steps')).toContainText('キャッシュ');
-  await page.goto('#/learn/vpn-bgp?stage=1');
-  await expect(page.locator('.visual-card .nested').first()).toContainText('Encapsulating Security Payload');
-  await page.getByRole('button', { name: 'GRE', exact: true }).click();
-  await expect(page.locator('.visual-card .nested').first()).toContainText('Protocol: GRE (47)');
   expect(errors).toEqual([]);
 });
 test('AWS, Terraform and Packet Analyzer workspaces run in the browser', async ({ page }) => {
@@ -254,6 +259,13 @@ test('terminal: Ctrl+C copies a selection, Ctrl+V pastes, Ctrl+C without selecti
   await page.keyboard.press('Control+C');
   await expect(rows).toContainText('^C');
 });
+test('terminal: fits its panel without overflowing (a scrollbar there would toggle with each refit)', async ({ page }) => {
+  await page.goto('#/lab/routing-01');
+  await page.getByRole('button', { name: /Terminal/ }).click();
+  await page.waitForSelector('.xterm-rows');
+  const panel = await page.locator('.workspace-bottom').evaluate(b => [b.scrollHeight - b.clientHeight, b.scrollWidth - b.clientWidth]);
+  expect(panel).toEqual([0, 0]);
+});
 test('terminal: deleting full-width characters and wrapped input keeps the screen equal to the command that runs', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 900 }); // the 210-character command below wraps onto several rows
   await page.goto('#/lab/routing-01');
@@ -276,9 +288,6 @@ test('invalid or very long input never blanks a page or widens it', async ({ pag
   await page.getByRole('textbox', { name: 'サブネットCIDR', exact: true }).fill('10.0.1.0/33');
   await page.getByRole('textbox', { name: 'サブネットCIDR', exact: true }).press('Enter');
   await expect(page.locator('.aws-form')).toContainText('CIDRの形式が正しくありません');
-  await page.goto('#/learn/nat-firewall?stage=1');
-  await page.getByRole('textbox', { name: '評価する宛先', exact: true }).fill('');
-  await expect(page.getByRole('textbox', { name: '評価する宛先', exact: true })).toBeVisible();
   await page.setViewportSize({ width: 1024, height: 900 });
   await page.goto('#/terraform');
   await page.getByRole('textbox', { name: 'terraform コマンド' }).fill('x'.repeat(300));
@@ -383,7 +392,7 @@ test('switching labs quickly keeps each lab\'s own topology', async ({ page }) =
   await page.reload();
   await expect.poll(ids).toEqual(vlan);
 });
-test('link aggregation and ECMP: CLI and canvas share one state, the Debugger and lesson visuals explain each path', async ({ page }) => {
+test('link aggregation and ECMP: CLI and canvas share one state, the Debugger explains each path', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('#/lab/lag-01');
   for (const [id, mode] of [['SW1', 'active'], ['SW2', 'passive']]) {
@@ -400,11 +409,6 @@ test('link aggregation and ECMP: CLI and canvas share one state, the Debugger an
   await expect(page.locator('.hop-table')).toContainText('LAG');
   await page.getByRole('button', { name: /到達度を確認/ }).click();
   await expect(page.locator('.assessment')).toContainText('すべての到達条件');
-  await page.goto('#/learn/routing?stage=1');
-  await page.getByRole('combobox', { name: '故障させるリンク' }).selectOption('R2-R4');
-  await expect(page.locator('.flow-table')).toContainText('届かない');
-  await page.getByRole('combobox', { name: '経路の作り方' }).selectOption('ospf');
-  await expect(page.locator('.flow-table')).not.toContainText('届かない');
   expect(errors).toEqual([]);
 });
 
@@ -440,36 +444,29 @@ test('PC layout: a lab shows its brief beside a workspace that fits the window; 
   await expect(page.getByRole('navigation', { name: 'メインナビゲーション' })).toBeVisible();  // reading pages keep the sidebar
 });
 
-test('progress reset clears completions and quiz answers from storage but keeps the workspace', async ({ page }) => {
-  // Build up progress: a completed guided lab and a correct chapter quiz answer.
+test('resetting progress forgets read sections and lab work, after a confirmation', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('#/learn/tcp-ip');
+  await page.getByRole('button', { name: /読んだ。次のセクションへ/ }).click();
+  await expect(page.getByRole('tab', { name: /Theory/ })).toContainText('1読了');
   await page.goto('#/lab/routing-01');
   await route(page, 'R1', '192.168.2.0/24', '10.0.0.2');
   await route(page, 'R2', '192.168.1.0/24', '10.0.0.1');
-  await page.getByRole('button', { name: /到達度を確認/ }).click();
-  await expect(page.locator('.assessment')).toContainText('すべての到達条件');
-  await page.goto('#/learn/subnet');
-  await page.getByRole('tab', { name: /Quiz/ }).click();
-  await page.getByRole('radio', { name: /192.168.10.94/ }).check();
-  await page.getByRole('button', { name: '回答を確認', exact: true }).click();
-  await expect(page.locator('.quiz-feedback')).toContainText('正解です');
-  // The roadmap summarises the progress and offers the reset behind a confirmation.
+  await selectDevice(page, 'PC1');
+  await page.getByRole('button', { name: 'ping', exact: true }).click();
+  await expect(page.locator('.workspace-status')).toContainText('Echo Reply received');
   await page.goto('#/roadmap');
-  const counts = page.locator('.progress-summary dd');
-  await expect(counts.nth(0)).toHaveText(/^1 \/ \d+$/);  // completed labs
-  await expect(counts.nth(2)).toHaveText('1');  // quiz / diagnosis answers
-  await page.getByRole('button', { name: '進捗をリセット', exact: true }).click();
-  await expect(page.getByRole('heading', { name: /リセットしますか/ })).toBeVisible();
-  await page.getByRole('button', { name: 'リセットする', exact: true }).click();
-  await expect(page.locator('.progress-management [role="status"]')).toContainText('リセットしました');
-  // The clearing reaches IndexedDB, so it survives a reload.
-  await page.reload();
-  await expect(page.locator('.progress-summary dd').nth(0)).toHaveText(/^0 \/ \d+$/);
-  await expect(page.locator('.progress-summary dd').nth(2)).toHaveText('0');
-  await page.goto('#/learn/subnet');
-  await page.getByRole('tab', { name: /Quiz/ }).click();
-  await expect(page.locator('.quiz-feedback')).toHaveCount(0);
-  // Progress only: the stored lab configuration is untouched and still passes.
+  await page.getByRole('button', { name: '進捗をリセット' }).click();
+  const dialog = page.getByRole('dialog', { name: '学習の進捗をリセットしますか？' });
+  await dialog.getByRole('button', { name: 'キャンセル' }).click();
+  await expect(dialog).toBeHidden();
+  await page.getByRole('button', { name: '進捗をリセット' }).click();
+  await Promise.all([page.waitForEvent('load'), dialog.getByRole('button', { name: 'リセットする' }).click()]);
+  await page.goto('#/learn/tcp-ip');
+  await expect(page.getByRole('tab', { name: /Theory/ })).toContainText('0読了');
   await page.goto('#/lab/routing-01');
-  await page.getByRole('button', { name: /到達度を確認/ }).click();
-  await expect(page.locator('.assessment')).toContainText('すべての到達条件');
+  await selectDevice(page, 'PC1');
+  await page.getByRole('button', { name: 'ping', exact: true }).click();
+  await expect(page.locator('.workspace-status')).toContainText('通信失敗');
+  expect(errors).toEqual([]);
 });

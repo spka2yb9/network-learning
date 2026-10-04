@@ -10,8 +10,9 @@ const WIDE = /[\u1100-\u115f\u2329\u232a\u2e80-\u303e\u3040-\ua4cf\uac00-\ud7a3\
 export default function Terminal({ deviceId }: { deviceId: string }) {
   const container = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!container.current || !deviceId) return;
-    const terminal = new XTerminal({ cursorBlink: true, fontSize: 16, lineHeight: 1.55, fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace', convertEol: true,
+    // A selection left over from the previous workspace (one render after a switch) has no session here.
+    if (!container.current || !deviceId || !lab.network.snapshot().devices.some(d => d.id === deviceId)) return;
+    const terminal = new XTerminal({ cursorBlink: true, fontSize: 17, lineHeight: 1.55, fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace', convertEol: true,
       theme: { background: '#182b29', foreground: '#d6e5df', cursor: '#72dbb9', selectionBackground: '#37584b', black: '#182b29', green: '#7de0b6' }, scrollback: 1500, allowProposedApi: false });
     const fit = new FitAddon(); terminal.loadAddon(fit); terminal.open(container.current);
     // Ctrl/Cmd+C with a selection and Ctrl/Cmd+V fall through to the browser's native copy/paste events, which xterm handles

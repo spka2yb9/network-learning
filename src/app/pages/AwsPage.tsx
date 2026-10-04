@@ -54,9 +54,10 @@ export function Analyzer({ model, onResult }: { model: AwsModel; onResult?: (r?:
   </div>;
 }
 
-export default function AwsPage() {
+/** `labId`: embedded in a chapter's Simulation tab (no page header of its own). */
+export default function AwsPage({ labId: embedded }: { labId?: string }) {
   useUI(s => s.revision);
-  const { labId } = useParams();
+  const route = useParams(); const labId = embedded ?? route.labId;
   const [ready, setReady] = useState(false);
   const [analysis, setAnalysis] = useState<AwsAnalysis>();
   const [confirm, setConfirm] = useState(false);
@@ -70,7 +71,7 @@ export default function AwsPage() {
   const highlight = analysis ? [...new Set(analysis.hops.flatMap(h => [...h.resource.matchAll(/(vpc|subnet|igw|nat|sg|acl|i|alb|nlb|lb|pcx|vpce|vgw|rtb)-[a-z0-9-]+/g)].map(m => m[0])))] : [];
   const select = (id: string) => { aws.selected = id; useUI.getState().changed(); };
   return <div className="aws-page">
-    <div className="page-breadcrumb"><Link to="/">ホーム</Link><Icon name="chevron" size={12}/>{aws.lab ? <><Link to="/labs">ラボ</Link><Icon name="chevron" size={12}/><span>{aws.lab.title}</span></> : <span>AWS VPC Designer</span>}<button className="toolbar-button tour-button" onClick={() => startTour('aws')} title="画面の使い方を順番に案内します"><Icon name="bulb" size={16}/><span>操作ガイド</span></button></div>
+    {!embedded && <div className="page-breadcrumb"><Link to="/">ホーム</Link><Icon name="chevron" size={12}/>{aws.lab ? <><Link to="/labs">ラボ</Link><Icon name="chevron" size={12}/><span>{aws.lab.title}</span></> : <span>AWS VPC Designer</span>}<button className="toolbar-button tour-button" onClick={() => startTour('aws')} title="画面の使い方を順番に案内します"><Icon name="bulb" size={16}/><span>操作ガイド</span></button></div>}
     {!aws.lab && <div className="page-heading"><div><div className="eyebrow">AWS VPC · EDUCATIONAL MODEL</div><h1>VPC Designer</h1><p>AWSのネットワーク（VPC）を、ブラウザの中で組み立てる教育用モデルです。実際のAWSには接続しません。左の RESOURCES で部品を追加し、構成図か一覧で選んで、右の PROPERTIES で設定します。下の到達性アナライザで、通信が行きと帰りの両方で届くかを確かめられます。</p></div><span className="badge"><Icon name="cloud" size={14}/> AWSアカウント不要</span></div>}
     {aws.lab && <LabBrief lab={aws.lab} assessment={aws.assessment} onAssess={() => aws.assess()} onExample={() => aws.reset(true)}/>}
     {!aws.lab && <DesignControls kind="aws" info={aws.design} templates={awsTemplates} snapshot={() => aws.model}

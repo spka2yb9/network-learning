@@ -7,11 +7,17 @@ import { chapterById } from '../../lessons/curriculum';
 import { useUI } from '../../stores/ui';
 import { Icon } from '../Icon';
 import Modal from '../Modal';
+import SimulationSteps from './SimulationSteps';
 
-const kindText = { guided: 'GUIDED LAB', challenge: 'CHALLENGE', troubleshooting: 'TROUBLESHOOTING', mastery: 'MASTERY CHECK', capstone: 'CAPSTONE' } as const;
+const kindText = { guided: 'GUIDED LAB', challenge: 'CHALLENGE', troubleshooting: 'TROUBLESHOOTING', mastery: 'MASTERY CHECK', capstone: 'CAPSTONE', simulation: 'SIMULATION' } as const;
+type Props = { lab: Lab; assessment?: CheckResult[]; onAssess?: () => void; onExample?: () => void };
 
-/** Mission header shared by every workspace. Grading is always final-state based and supplied by the caller. */
-export default function LabBrief({ lab, assessment, onAssess, onExample }: { lab: Lab; assessment?: CheckResult[]; onAssess?: () => void; onExample?: () => void }) {
+/** Mission header shared by every workspace. A chapter's Simulation shows its steps instead. */
+export default function LabBrief(props: Props) {
+  return props.lab.kind === 'simulation' ? <SimulationSteps lab={props.lab} onExample={props.onExample}/> : <Mission {...props}/>;
+}
+/** Grading is always final-state based and supplied by the caller. */
+function Mission({ lab, assessment, onAssess, onExample }: Props) {
   useUI(s => s.revision);
   const [hints, setHints] = useState(0);
   const [open, setOpen] = useState(true);

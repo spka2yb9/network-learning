@@ -4,99 +4,39 @@ code,pre{font-family:var(--mono)}
 input[type=checkbox],input[type=radio]{padding:0;width:auto;accent-color:var(--green)}
 
 /* ---- generic building blocks ---- */
-.visuals,.tools{display:grid;gap:18px;min-width:0}
-.visual-card{border:1px solid var(--border);border-radius:10px;background:#fff;padding:20px;display:grid;gap:14px;min-width:0;overflow-x:auto}
-.visual-card h4{font-size:.875rem;color:#4c6443;margin:6px 0}
-.visual-card .tool-heading{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap}
-.visual-card .tool-heading>div{flex:1;min-width:220px}
-.visual-card .tool-heading h3{font-size:1rem;color:#35553f;margin-bottom:4px}
-.visual-card .tool-heading p{font-size:.875rem;color:#5e6d60;line-height:1.8}
+
 .segmented{display:inline-flex;flex-wrap:wrap;gap:4px;padding:3px;border:1px solid var(--border);border-radius:8px;background:#f7f9f4;max-width:100%}
 .segmented button{padding:6px 11px;border-radius:6px;font-size:.8125rem;color:#56705c}
 .segmented button.active{background:#fff;color:var(--green);box-shadow:0 1px 3px #1e3a2e1f;font-weight:600}
 .segmented.wide{display:flex}
-.inline-form{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:flex-end}
-.inline-form label,.visual-card>label{display:grid;gap:4px;font-size:.8125rem;color:#56705c}
-.inline-form input:not([type=checkbox]):not([type=range]),.inline-form select,.visual-card>label input,.mini-table input{border:1px solid #d7e1d5;border-radius:6px;padding:7px 9px;font-size:.875rem;background:#fff;min-width:0;max-width:100%}
-.inline-form input[type=range]{width:180px}
-.toggle{display:inline-flex!important;align-items:center;gap:7px;font-size:.8125rem;color:#445f4c;cursor:pointer}
-.check-list{display:grid;gap:6px}
-.two-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;min-width:0}
+
+.mini-table input{border:1px solid #d7e1d5;border-radius:6px;padding:7px 9px;font-size:.875rem;background:#fff;min-width:0;max-width:100%}
+
 .plain{list-style:none;padding:0;margin:0;display:grid;gap:3px;font-size:.8125rem;color:#4f6457}
 ol.plain{list-style:decimal;padding-left:20px}
-.quiz-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+
 .mini-table{width:100%;border-collapse:collapse;font-size:.8125rem}
 .mini-table th{text-align:left;font-weight:600;color:#5b6f61;border-bottom:1px solid var(--border);padding:6px 8px;white-space:nowrap}
 .mini-table td{border-bottom:1px solid #eef2ec;padding:6px 8px;vertical-align:top}
 .mini-table code{font-size:.78rem;word-break:break-all}
 .mini-table tr.win td{background:var(--ok-bg);color:#1f5e40;font-weight:600}
 .mini-table tr.lose td{background:#fbf8ef;color:#6f6440}
-.mini-table tr.miss td{color:#8b978f}
+
 .mini-table tr.unmanaged td{color:var(--warn)}
-.scope-note{font-size:.8125rem;color:#5b6b61;border-left:3px solid #c9dbc6;padding:6px 12px;background:#f8faf5}
-.event-steps{list-style:none;padding:0;margin:0;display:grid;gap:6px}
-.event-steps li{font-size:.8125rem;line-height:1.7;padding:8px 10px;border-radius:6px;background:#f6f8f3;border-left:3px solid #b9cbb5;display:grid}
-.event-steps li.learn{border-left-color:#5b8fd0;background:#f1f6fd}
-.event-steps li.flood{border-left-color:#d49a3a;background:#fdf7ec}
-.event-steps li.fwd{border-left-color:#3f9b6d}
-.event-steps small{color:#6b7a70}
 
 /* ---- TCP/IP ---- */
-.layer-stack{display:flex;flex-wrap:wrap;gap:6px}
-.layer-chip{display:grid;padding:7px 10px;border-radius:7px;background:#f3f6f0;font-size:.75rem;color:#5b6f61;flex:1 1 130px}
-.layer-chip strong{font-size:.8125rem;color:#35553f}
-.l-DNS{background:#eef4fb}.l-TCP{background:#f2f0fb}.l-TLS{background:#fbf0f4}.l-HTTP{background:#fdf5e9}.l-IP{background:#eef6f0}.l-Ethernet{background:#f4f4ef}
-.packet-strip{display:flex;flex-wrap:wrap;gap:5px}
+
 .pkt{display:inline-flex;gap:5px;align-items:center;border:1px solid #d9e2d6;border-radius:6px;padding:5px 8px;font-size:.75rem;background:#fff;color:#4a6152}
 .pkt span{font-family:var(--mono);color:#5b6b61}
 .pkt.active{outline:2px solid var(--green);outline-offset:1px}
-.ph-ARP{background:#f4f4ef}.ph-DNS{background:#eef4fb}.ph-TCP{background:#f2f0fb}.ph-TLS{background:#fbf0f4}.ph-HTTP{background:#fdf5e9}
+
 .nested{display:grid;gap:4px}
-.nest{display:grid;gap:2px;padding:8px 10px;border:1px solid #e3eae0;border-radius:6px;background:#fafcf8;font-size:.78rem;min-width:0}
-.nest strong{color:#35553f;font-size:.8125rem}
-.nest span{font-family:var(--mono);color:#56685d;overflow-wrap:anywhere}
-.nest.decrypted{border-style:dashed;background:#fdf5f7}
-.nest small{color:#9a5a6a}
-.timeline{display:grid;gap:6px;min-width:0}
-.timeline-head{display:flex;justify-content:space-between;font-size:.75rem;font-weight:600;color:#5b6f61;border-bottom:1px solid var(--border);padding-bottom:4px}
-.t-row{display:grid;grid-template-columns:56px 1fr;gap:8px;align-items:center}
-.t-time{font-family:var(--mono);font-size:.72rem;color:#5b6b61}
-.t-arrow{display:grid;gap:1px;padding:6px 12px;border-radius:6px;font-size:.78rem;max-width:78%;position:relative}
-.t-row.right .t-arrow{background:#eef4fb;justify-self:start}
-.t-row.right .t-arrow::after{content:'→';position:absolute;right:-18px;top:6px;color:#5b8fd0}
-.t-row.left .t-arrow{background:#f2f7ee;justify-self:end;text-align:right}
-.t-row.left .t-arrow::before{content:'←';position:absolute;left:-18px;top:6px;color:#3f9b6d}
-.t-arrow small{font-family:var(--mono);color:#5d6d63}
-.t-arrow em{font-style:normal;color:#8a5a2a}
 
 /* ---- Subnet ---- */
-.cidr-bar{display:flex;flex-wrap:wrap;gap:3px}
-.cidr-block{display:grid;gap:1px;padding:6px;border-radius:5px;background:#eef6f0;border:1px solid #d5e6d7;font-size:.7rem;min-width:110px;flex-grow:1}
-.cidr-block:nth-child(even){background:#f3f1fb;border-color:#e0dcf3}
-.cidr-block strong{font-family:var(--mono);font-size:.75rem;color:#35553f}
-.cidr-block small{color:#5b6b61}
-.practice-q{font-size:1.25rem}
-.mini-table.vlsm td:nth-child(3){white-space:nowrap}
 
 /* ---- Routing / L2 ---- */
-.route-lookup td:first-child{font-family:var(--mono);font-weight:600}
-.domain-map{display:flex;flex-wrap:wrap;gap:10px}
-.domain-node{display:grid;justify-items:center;gap:2px;padding:12px 16px;border-radius:9px;border:2px solid #e3e9e1;background:#fafcf8;min-width:86px;font-size:.8125rem;color:#5b6b61}
-.domain-node small{font-size:.72rem}
-.domain-node.vlan-10{border-color:#cfe0f5}.domain-node.vlan-20{border-color:#f1dcc0}
-.domain-node.source{background:#1f6b57;color:#fff;border-color:#1f6b57}
-.domain-node.hit{background:#fff4d9;border-color:#e0a93b;color:#6f4f0f;box-shadow:0 0 0 3px #f7e3b0}
 
 /* ---- DNS ---- */
-.dns-steps{list-style:none;padding:0;margin:0;display:grid;gap:6px;counter-reset:s}
-.dns-steps li{display:grid;gap:2px;padding:8px 12px 8px 38px;border-radius:7px;background:#f6f8f3;font-size:.8125rem;position:relative;counter-increment:s}
-.dns-steps li::before{content:counter(s);position:absolute;left:10px;top:8px;width:20px;height:20px;border-radius:50%;background:#dfe9dc;display:grid;place-items:center;font-size:.72rem;color:#35553f}
-.dns-steps li.client{background:#eef4fb}
-.dns-steps li.r-referral{background:#f7f5ec}
-.dns-steps li.r-answer{background:var(--ok-bg)}
-.dns-steps li.r-nxdomain,.dns-steps li.r-timeout,.dns-steps li.r-error{background:var(--ng-bg)}
-.dns-steps li.r-cache{background:#f2f0fb}
-.dns-steps small{color:#5b6b61;overflow-wrap:anywhere}
 
 /* ---- Linux ladder (also used by the Diagnose panel) ---- */
 .ladder{list-style:none;padding:0;margin:0;display:grid;gap:5px}
@@ -115,15 +55,8 @@ ol.plain{list-style:decimal;padding-left:20px}
 .diagnose-form input,.diagnose-form select{border:1px solid #d7e1d5;border-radius:6px;padding:6px 8px;font-size:.8125rem;min-width:0}
 
 /* ---- Cloud / BGP / Terraform visuals ---- */
-.aws-demo{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:14px}
-.aws-demo-diagram{height:420px;border:1px solid var(--border);border-radius:8px;overflow:hidden}
-.plan-summary{list-style:none;padding:0;margin:0;display:grid;gap:4px;font-size:.8125rem}
-.plan-summary li{padding:6px 10px;border-radius:6px;background:#f6f8f3}
-.plan-summary code{font-weight:700;display:inline-block;min-width:26px}
-.act-create{background:var(--ok-bg)!important}.act-create code{color:var(--ok)}
-.act-update{background:#fdf7ec!important}.act-update code{color:#a8751f}
-.act-replace,.act-delete{background:var(--ng-bg)!important}.act-replace code,.act-delete code{color:var(--ng)}
-.tf-plan,.tf-output pre{font-size:.75rem;line-height:1.55;background:#1d2b26;color:#dfe9e2;padding:12px 14px;border-radius:7px;overflow:auto;max-height:360px;white-space:pre}
+
+.tf-output pre{font-size:.75rem;line-height:1.55;background:#1d2b26;color:#dfe9e2;padding:12px 14px;border-radius:7px;overflow:auto;max-height:360px;white-space:pre}
 
 /* ---- lab framework ---- */
 .lab-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
@@ -166,25 +99,11 @@ ol.plain{list-style:decimal;padding-left:20px}
 .chapter-strip span{font-size:.75rem;letter-spacing:1px;color:#5b6b61}
 .chapter-strip strong{font-size:.875rem;color:#35553f;font-weight:500}
 .chapter-strip small{font-size:.75rem;color:#5b6b61}
-.aside-labs ul{list-style:none;padding:0;display:grid;gap:4px;font-size:.8125rem}
-.aside-labs a{color:#476858}
+
 .capstone-grid a{display:grid;gap:6px;color:inherit}
 .capstone-grid a.done{border-color:#bfdcc8}
 .capstone-grid a p{font-size:.8125rem;color:#5e6d60;line-height:1.7}
 .roadmap-list .done .roadmap-number{background:var(--ok);color:#fff}
-.professional{font-size:.9375rem}
-
-/* ---- learning progress reset (roadmap) ---- */
-.progress-management{margin-top:44px;border:1px solid var(--border);border-radius:10px;background:#fff;padding:24px 26px}
-.progress-management .section-heading{margin-bottom:10px}
-.progress-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:16px 0 20px;padding:0}
-.progress-summary>div{border:1px solid var(--border);border-radius:8px;background:#fbfdf7;padding:12px 14px}
-.progress-summary dt{font-size:.75rem;color:#5b6b61}
-.progress-summary dd{margin:6px 0 0;font-size:1.25rem;font-weight:500;color:#35553f}
-.progress-management-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.progress-management .success-text{margin:16px 0 0}
-.button.danger{background:#a43c35;border-color:#a43c35;color:#fff}
-.button.danger:hover{background:#8c3129;transform:translateY(-1px)}
 
 /* ---- simulator inspector pieces ---- */
 .prop-section{border-top:1px solid #eef2ec;padding:12px 14px;display:grid;gap:8px}
@@ -195,7 +114,7 @@ ol.plain{list-style:decimal;padding-left:20px}
 .small-title{font-size:.75rem;font-weight:600;color:#5b6f61;letter-spacing:.6px}
 .text-apply{display:flex;gap:6px;align-items:flex-end}
 .text-apply label{flex:1;display:grid;gap:3px;font-size:.75rem;min-width:0}
-.text-apply input,.field-row input,.field-row select,.rule-add input,.rule-add select,.nat-add input,.nat-add select,.record-add input,.record-add select,.vlan-add input,.link-form input,.switchport-form input,.switchport-form select,.template-select,.inline-selects select{border:1px solid #d7e1d5;border-radius:6px;padding:6px 8px;font-size:.8125rem;min-width:0;max-width:100%;background:#fff}
+.text-apply input,.field-row input,.field-row select,.rule-add input,.rule-add select,.nat-add input,.nat-add select,.record-add input,.record-add select,.vlan-add input,.link-form input,.switchport-form input,.switchport-form select,.inline-selects select{border:1px solid #d7e1d5;border-radius:6px;padding:6px 8px;font-size:.8125rem;min-width:0;max-width:100%;background:#fff}
 .field-row{display:flex;flex-wrap:wrap;gap:6px;align-items:flex-end}
 .field-row label{display:grid;gap:3px;font-size:.75rem;flex:1 1 90px}
 .rule-add,.nat-add,.record-add,.vlan-add,.link-form,.switchport-form,.add-logical,.inline-selects,.preset-buttons{display:flex;flex-wrap:wrap;gap:6px;align-items:flex-end}
@@ -311,13 +230,12 @@ ol.plain{list-style:decimal;padding-left:20px}
 @media (max-width:1100px){
   .aws-workspace{grid-template-columns:minmax(0,1fr)}
   .aws-side,.aws-props{max-height:none}
-  .tf-workspace,.aws-demo{grid-template-columns:minmax(0,1fr)}
+  .tf-workspace{grid-template-columns:minmax(0,1fr)}
 }
 
 /* Edge labels must not steal clicks: double-clicking a link (toggle up/down) should hit the edge, not a re-rendered label. */
 .topology .react-flow__edge-textwrapper,.topology .react-flow__edge-textbg,.topology .react-flow__edge-text{pointer-events:none}
 .workspace-inspector{overflow-x:hidden}
-.aws-demo .hop-list{max-height:420px;overflow:auto;padding-right:4px}
 
 /* ---- lesson Markdown: tables, notes, sub-headings ---- */
 .markdown h4{font-size:1.02em;color:#54714e;margin:24px 0 10px}
@@ -337,10 +255,8 @@ ol.plain{list-style:decimal;padding-left:20px}
 /* Single-column grid containers: a grid track defaults to min-content, so one wide child (code editor,
    capture table, long command) would widen the column and spill over its neighbour. minmax(0,1fr) keeps
    every child inside its own column (wide content scrolls or wraps instead of overlapping). */
-.visuals,.tools,.visual-card,.check-list,.event-steps,.nested,.timeline,.dns-steps,.ladder,.diagnose,.plan-summary,.lab-card,.lab-brief,.lab-details,
-.diagnosis,.diagnosis-options,.prop-section,.prop-body,.state-panel,.aws-side,.aws-props,.aws-main,.aws-analyzer,.hop-list,.tf-editor,.tf-side,
-.code-editor,.tf-output,.tf-state,.dep-level,.rule-list,.records,.resource-list,.aws-form,.aws-field{grid-template-columns:minmax(0,1fr)}
-.tf-output pre,.tf-plan{max-width:100%}
+.nested,.ladder,.diagnose,.lab-card,.lab-brief,.lab-details,.diagnosis,.diagnosis-options,.prop-section,.prop-body,.state-panel,.aws-side,.aws-props,.aws-main,.aws-analyzer,.hop-list,.tf-editor,.tf-side,.code-editor,.tf-output,.tf-state,.dep-level,.rule-list,.records,.resource-list,.aws-form,.aws-field{grid-template-columns:minmax(0,1fr)}
+.tf-output pre{max-width:100%}
 
 .design-controls{padding:20px;margin-bottom:18px;border:1px solid var(--border);border-radius:12px;background:#fff}
 .design-heading>div{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
@@ -407,11 +323,120 @@ ol.plain{list-style:decimal;padding-left:20px}
 .legend-line.lag{border-top:4px double #5b7fc7;background:none}
 .lag-add{display:grid;gap:8px;margin-top:10px}
 .lag-ports{display:flex;flex-wrap:wrap;gap:6px 12px}
-.flow-table td.r2,.flow-table td.p1{color:#2f5f9e;font-weight:600}
-.flow-table td.r3,.flow-table td.p2{color:#9a5b1f;font-weight:600}
-.flow-table td.fail{color:#b4473c;font-weight:600}
-.lag-figure{width:100%;max-width:520px;height:auto;display:block;margin:8px auto}
-.spof-list li.spof{color:#b4473c;font-weight:600}
-.compat-result{padding:10px 12px;border-radius:6px;margin-top:10px;font-size:0.875rem;line-height:1.8}
-.compat-result.ok{background:#eef7ea;color:#3f6b38}
-.compat-result.ng{background:#fbefe9;color:#8a4b32}
+
+/* ---- learn page: Theory / Simulation tabs ---- */
+.lesson-tabs{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:22px 0 28px;max-width:760px}
+.lesson-tabs a{display:flex;align-items:center;gap:14px;padding:14px 18px;border:1px solid var(--border);border-radius:10px;background:white;color:#4c6457;transition:border-color .15s,background .15s}
+.lesson-tabs a:hover{border-color:#bcd3c1;background:#fbfdf9}
+.lesson-tabs a.active{border-color:var(--green);background:var(--mint);color:var(--green-dark);box-shadow:inset 0 -3px 0 var(--green)}
+.lesson-tabs strong{display:block;font-size:1.0625rem}
+.lesson-tabs small{display:block;color:#617468;margin-top:2px}
+.learn-page.simulation{max-width:none;padding-top:18px}
+.learn-page.simulation .page-heading{margin-bottom:0}
+.learn-page.simulation .page-heading h1{font-size:1.5rem;margin:2px 0 0}
+.learn-page.simulation .lesson-tabs{margin:12px 0 16px}
+.learn-page.simulation .lesson-tabs a{padding:9px 14px}
+.learn-page.simulation .page-breadcrumb{display:none}
+
+/* ---- Theory reader: one section per page, contents and keywords beside it ---- */
+.theory-reader{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:44px;align-items:start}
+.theory-page{max-width:940px;min-width:0}
+.theory-progress{display:flex;align-items:center;gap:16px;font-size:.8125rem;letter-spacing:1.2px;color:#5b7062;font-weight:600}
+.theory-progress>span:nth-child(2){display:inline-flex;align-items:center;gap:5px;letter-spacing:0;font-weight:500}
+.theory-progress .progress-track{flex:1;margin:0;height:5px;background:#e7eee1;border-radius:5px;overflow:hidden}
+.theory-progress .progress-track span{display:block;height:100%;background:#649367;border-radius:5px}
+.theory-title{font-size:1.875rem;line-height:1.5;margin:14px 0 26px;padding-bottom:16px;border-bottom:1px solid var(--border);color:#1f3a30}
+.theory-page .markdown h3{margin:44px 0 18px;padding-top:6px;scroll-margin-top:24px}
+.theory-page .markdown pre{background:#f4f7f1;border:1px solid #e3eadf;border-radius:8px;padding:14px 16px;overflow-x:auto;line-height:1.6}
+.section-pager{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:48px;padding-top:24px;border-top:1px solid var(--border)}
+.section-pager button,.section-pager a{display:flex;flex-direction:column;gap:6px;text-align:left;padding:16px 18px;border:1px solid var(--border);border-radius:10px;background:white;color:#3f584b;line-height:1.6}
+.section-pager small{display:inline-flex;align-items:center;gap:6px;color:#617468;font-size:.8125rem}
+.section-pager .pager-prev small svg{transform:rotate(180deg)}
+.section-pager span{font-weight:600}
+.section-pager .pager-next{grid-column:2;text-align:right;align-items:flex-end;border-color:var(--green);background:var(--mint);color:var(--green-dark)}
+.section-pager .pager-next:hover{background:#e2efe4}
+.section-pager .pager-prev:hover{background:#f6f9f3}
+.next-chapter{text-align:right;margin-top:12px}
+.next-chapter a{color:var(--green);text-decoration:underline}
+.theory-aside{position:sticky;top:20px;max-height:calc(100vh - 40px);overflow-y:auto;display:grid;gap:18px;padding-right:4px}
+.aside-heading{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.aside-heading small{color:#617468}
+.theory-toc ol{list-style:none;margin:0;padding:0 4px 0 0;display:grid;gap:2px;position:relative;max-height:min(46vh,560px);overflow-y:auto;overscroll-behavior:contain}
+.theory-toc li>button{display:flex;gap:10px;align-items:flex-start;width:100%;text-align:left;padding:8px 8px;border-radius:7px;color:#566b5e;font-size:.9375rem;line-height:1.55}
+.theory-toc li>button:hover{background:#f0f4eb}
+.theory-toc li.current>button{background:#e8f1e6;color:#20513e;font-weight:600}
+.toc-number{flex:none;display:inline-grid;place-items:center;width:22px;height:22px;border:1px solid #dce5d8;border-radius:50%;font-size:.75rem;color:#5c6f63;margin-top:1px}
+.theory-toc li.read .toc-number{background:#e2f0e4;border-color:#c8dfc8;color:#347653}
+.theory-toc li.current .toc-number{background:var(--green);border-color:var(--green);color:white}
+.theory-toc ul{list-style:none;margin:2px 0 8px 40px;padding:0 0 0 10px;border-left:2px solid #dfe9db;display:grid;gap:2px}
+.theory-toc ul a{display:block;font-size:.8125rem;line-height:1.6;color:#5b7064;padding:3px 4px}
+.theory-toc ul a:hover{color:var(--green)}
+.theory-terms{border-top:1px solid var(--border);padding-top:16px}
+.theory-terms details{border-bottom:1px dashed #e3e9df;padding:6px 2px}
+.theory-terms summary{font-size:.9375rem;font-weight:500;color:#2f4d40;display:flex;justify-content:space-between;gap:8px}
+.theory-terms summary small{color:#7a8a80;font-weight:400}
+.theory-terms details p{font-size:.875rem;line-height:1.8;margin:6px 0 4px;color:#4d6156}
+.theory-terms>.tiny{margin-top:10px}
+@media(max-width:1250px){.theory-reader{grid-template-columns:minmax(0,1fr) 250px;gap:28px}}
+
+/* ---- lesson callouts: > **ポイント** etc. and > **用語：X** cards ---- */
+.markdown blockquote.callout{border-left-width:4px;border-radius:0 8px 8px 0;padding:14px 18px;font-size:.95em;color:#34483d}
+.markdown .callout>p:first-child>strong:first-child{display:inline-block;font-size:.75rem;letter-spacing:.8px;padding:2px 9px;border-radius:20px;margin-right:8px;vertical-align:1px;background:white;border:1px solid currentColor}
+.markdown .callout ul{padding-left:20px;margin:8px 0 0}
+.markdown .callout li{line-height:1.8;margin:3px 0}
+.callout-point{background:#eef6f0;border-left-color:#3f8f68}.callout-point>p:first-child>strong:first-child{color:#2d7553}
+.callout-caution{background:#fff5ef;border-left-color:#d58a62}.callout-caution>p:first-child>strong:first-child{color:#a9583a}
+.callout-field{background:#f1f4fb;border-left-color:#6a85bf}.callout-field>p:first-child>strong:first-child{color:#4b659f}
+.callout-advanced{background:#f7f3fb;border-left-color:#9b82c4}.callout-advanced>p:first-child>strong:first-child{color:#755aa3}
+.callout-summary{background:#fbfaf1;border-left-color:#bca84c}.callout-summary>p:first-child>strong:first-child{color:#857327}
+.callout-simulator{background:#f5f7f6;border-left-color:#9aaaa2}.callout-simulator>p:first-child>strong:first-child{color:#5f6f67}
+.markdown blockquote.callout-term{background:white;border:1px solid #d8e6d9;border-left:4px solid var(--green);box-shadow:0 1px 0 #e7efe3}
+.markdown .callout-term>p:first-child>strong:first-child{display:block;width:max-content;max-width:100%;font-size:1.02em;letter-spacing:0;padding:0;border:0;border-radius:0;background:none;color:#1f5c45;margin:0 0 4px}
+
+/* ---- glossary hints on terms in the lesson text ---- */
+.term{position:relative;border-bottom:1.5px dotted #6f9f86;cursor:help}
+.term:focus{outline:2px solid #74af96;outline-offset:2px;border-radius:2px}
+.term-tip{display:none;position:absolute;z-index:40;left:0;top:calc(100% + 8px);width:340px;padding:12px 14px;background:#1f3a30;color:#eef5ef;border-radius:8px;box-shadow:0 8px 24px #0f2a2033;font-size:.875rem;line-height:1.75;font-weight:400;text-align:left;white-space:normal}
+.term:hover .term-tip,.term:focus .term-tip{display:block}
+.term-tip strong{display:block;color:white;font-size:.9375rem}
+.term-tip small{display:block;color:#a9c7b6;font-size:.75rem}
+.term-tip span{display:block;margin-top:4px}
+.term-tip em{display:block;margin-top:6px;font-style:normal;font-size:.75rem;color:#9fc2ae}
+.term.flip .term-tip{left:auto;right:0}
+
+/* ---- Simulation steps (the lab-brief panel of a chapter's Simulation) ---- */
+.sim-steps{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;align-content:start;overflow-x:hidden}
+.sim-steps .markdown pre{overflow-x:auto;max-width:100%;line-height:1.5;font-size:.75rem}
+.sim-head h2{font-size:1.25rem;margin:4px 0 6px;line-height:1.5}
+.sim-head>p{font-size:.9375rem;line-height:1.8;color:#4c6155;margin-bottom:10px}
+.sim-head .button.ghost{padding-left:0}
+.sim-progress{display:flex;align-items:center;gap:10px;font-size:.8125rem;color:#5b7062;margin-bottom:6px}
+.sim-progress .progress-track{flex:1;margin:0}
+.sim-step-list{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.sim-step{border:1px solid var(--border);border-radius:9px;background:white}
+.sim-step.current{border-color:#9cc3ab;box-shadow:0 0 0 3px #e3f0e5}
+.sim-step-head{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:10px 12px;font-size:.9375rem;font-weight:500;color:#3c5649;line-height:1.5}
+.sim-step-head>svg{margin-left:auto;transition:transform .15s;color:#7b8c82}
+.sim-step-head[aria-expanded=true]>svg{transform:rotate(90deg)}
+.sim-step-number{flex:none;display:inline-grid;place-items:center;width:24px;height:24px;border-radius:50%;border:1px solid #d6e1d4;font-size:.75rem;color:#5d7064}
+.sim-step.current .sim-step-number{background:var(--green);border-color:var(--green);color:white}
+.sim-step.done .sim-step-number{background:#e2f0e4;border-color:#c8dfc8;color:#347653}
+.sim-step.done .sim-step-head>span:nth-child(2){color:#5d7a68}
+.sim-step-body{padding:2px 14px 14px;display:grid;gap:10px;border-top:1px dashed #e3eadf}
+.sim-step-body .markdown{padding-top:8px}
+.sim-step-body .markdown p{line-height:1.85}
+.sim-step-body .markdown pre{background:#f4f7f1;border-radius:6px;padding:10px 12px;overflow-x:auto;font-size:.8125rem}
+.sim-step-status{margin:0;font-size:.875rem;color:#6a7a71}
+.sim-step-status.success-text{display:flex;align-items:center;gap:6px;padding:8px 12px}
+.sim-quiz{border:1px solid #dfe8da;border-radius:8px;padding:12px;background:#fafcf8;display:grid;gap:8px}
+.sim-quiz>strong{display:flex;align-items:center;gap:6px;font-size:.875rem;color:#3f6150}
+.sim-quiz>p{margin:0;font-size:.9375rem;line-height:1.8}
+.sim-quiz .diagnosis-options{display:grid;gap:6px}
+.sim-complete{display:flex;gap:12px;padding:14px;border-radius:9px;background:#eaf6ed;color:#235f44}
+.sim-complete p{font-size:.9rem;line-height:1.8;margin:6px 0 10px}
+.sim-actions{display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:1359px){.sim-steps{max-height:46vh;overflow-y:auto}}
+.progress-reset{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-top:48px;padding-top:28px;border-top:1px solid var(--border)}
+.progress-reset h2{font-size:1.125rem;color:#567250;font-weight:500;margin-bottom:6px}
+.progress-reset p{font-size:0.875rem;margin:0}
+.progress-reset-list{margin:4px 0 14px;padding-left:22px;font-size:0.9375rem;color:#607061;line-height:1.9}

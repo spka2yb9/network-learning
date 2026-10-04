@@ -45,9 +45,10 @@ function DependencyGraph() {
     <p className="muted tiny">各列の上の数字は、作る順番の段です。コードの参照（aws_vpc.main.id など）から決まる依存を「暗黙の依存関係」、depends_on で書いた依存を「明示的な依存関係」と呼びます。1の列から順に作成し、削除は逆の順番です。実際のTerraformでは、依存のないものどうしは並行して処理されます。</p></div>;
 }
 
-export default function TerraformPage() {
+/** `labId`: embedded in a chapter's Simulation tab (no page header of its own). */
+export default function TerraformPage({ labId: embedded }: { labId?: string }) {
   const revision = useUI(s => s.revision);
-  const { labId } = useParams();
+  const route = useParams(); const labId = embedded ?? route.labId;
   const [ready, setReady] = useState(false); const [cmd, setCmd] = useState(''); const [newFile, setNewFile] = useState('');
   const [side, setSide] = useState<'diagram' | 'graph' | 'state' | 'analyze'>('diagram');
   const [resetOpen, setResetOpen] = useState(false);
@@ -62,7 +63,7 @@ export default function TerraformPage() {
   const files = Object.keys(ws.files).sort();
   const out = terraform.output;
   return <div className="terraform-page">
-    <div className="page-breadcrumb"><Link to="/">ホーム</Link><Icon name="chevron" size={12}/>{terraform.lab ? <><Link to="/labs">ラボ</Link><Icon name="chevron" size={12}/><span>{terraform.lab.title}</span></> : <span>Terraform Lab</span>}<button className="toolbar-button tour-button" onClick={() => startTour('terraform')} title="画面の使い方を順番に案内します"><Icon name="bulb" size={16}/><span>操作ガイド</span></button></div>
+    {!embedded && <div className="page-breadcrumb"><Link to="/">ホーム</Link><Icon name="chevron" size={12}/>{terraform.lab ? <><Link to="/labs">ラボ</Link><Icon name="chevron" size={12}/><span>{terraform.lab.title}</span></> : <span>Terraform Lab</span>}<button className="toolbar-button tour-button" onClick={() => startTour('terraform')} title="画面の使い方を順番に案内します"><Icon name="bulb" size={16}/><span>操作ガイド</span></button></div>}
     {!terraform.lab && <div className="page-heading"><div><div className="eyebrow">INFRASTRUCTURE AS CODE · EDUCATIONAL SIMULATOR</div><h1>Terraform Lab</h1><p>HCLでインフラのコードを書き、terraform plan で「何が変わるか」を読み、apply でブラウザ内の「シミュレートされたAWS」に反映します。本物の Terraform CLI や AWS Provider は動かさず、実際のAWSには何も作られません。</p></div><span className="badge"><Icon name="code" size={14}/> HCLの一部に対応</span></div>}
     {terraform.lab && <LabBrief lab={terraform.lab} assessment={terraform.assessment} onAssess={() => terraform.assess()} onExample={() => terraform.reset(true)}/>}
     {!terraform.lab && <DesignControls kind="terraform" info={terraform.design} templates={terraformTemplates} snapshot={() => terraform.ws.snapshot()}

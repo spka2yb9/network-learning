@@ -52,9 +52,10 @@ function SendBar() {
       <button className="button small" disabled={!deviceId || (action === 'ping' && !isIpv4(target) && !linux)}><Icon name="play" size={13}/>{action}</button></form></div>;
 }
 
-export default function SimulatorPage() {
+/** `labId`: embedded in a chapter's Simulation tab (no page header of its own). */
+export default function SimulatorPage({ labId: embedded }: { labId?: string }) {
   const revision = useUI(s => s.revision); const deviceId = useUI(s => s.selectedDevice); const tab = useUI(s => s.bottomTab); const rightTab = useUI(s => s.inspectorTab);
-  const { labId } = useParams(); const [params, setParams] = useSearchParams();
+  const route = useParams(); const labId = embedded ?? route.labId; const [params, setParams] = useSearchParams();
   const [resetMode, setResetMode] = useState<'exercise' | 'example' | 'empty' | { template: string }>();
   const [importError, setImportError] = useState(''); const [ready, setReady] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -92,7 +93,7 @@ export default function SimulatorPage() {
   // Labels break only at <wbr> (see .inspector-tabs in styles.css), so they always read 機器 / 設定 regardless of panel width.
   const tabs: { id: InspectorTab; name: ReactNode; icon: IconName; hint: string }[] = [{ id: 'config', name: <>機器<wbr/>設定</>, icon: 'settings', hint: '選んだ機器のIP・経路・VLANなどを設定します' }, { id: 'state', name: '状態', icon: 'layers', hint: 'ARPキャッシュや経路表など、機器の今の状態を見ます' }, { id: 'debug', name: 'Debugger', icon: 'packet', hint: '記録した通信を1ステップずつ再生します' }, { id: 'diagnose', name: <>切り<wbr/>分け</>, icon: 'search', hint: '下の層から順に、どこで止まるかを自動で確かめます' }];
   return <div className="simulator-page">
-    <div className="page-breadcrumb"><Link to="/">ホーム</Link><Icon name="chevron" size={12}/>{current ? <><Link to="/labs">ラボ</Link><Icon name="chevron" size={12}/><span>{current.title}</span></> : <span>Playground</span>}</div>
+    {!embedded && <div className="page-breadcrumb"><Link to="/">ホーム</Link><Icon name="chevron" size={12}/>{current ? <><Link to="/labs">ラボ</Link><Icon name="chevron" size={12}/><span>{current.title}</span></> : <span>Playground</span>}</div>}
     {!current && <div className="page-heading"><div><div className="eyebrow">YOUR NETWORK WORKSPACE</div><h1>ネットワーク・プレイグラウンド</h1><p>機器を置いてケーブルでつなぎ、設定してから、パケットの流れを追いかけます。ツールバーの「テンプレートを開く」から、できあがった構成で始めることもできます。</p></div><span className="badge"><span className="status-dot"/> Browser simulation</span></div>}
     {current && <LabBrief lab={current} assessment={lab.assessment} onAssess={() => lab.assess()} onExample={() => lab.reset('example')}/>}
     {!current && <DesignControls kind="network" info={lab.design} templates={templates} snapshot={() => lab.network.snapshot()}

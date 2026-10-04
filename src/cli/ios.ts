@@ -106,10 +106,12 @@ function showIpRoute(ctx: Context, filter?: string) {
     const resolved = resolveRoute(d, filter); const best = resolved?.route;
     if (!best) return `% Network not in table（${filter} に一致する経路がありません。Default Route もありません）`;
     const blocks = resolved.ecmp?.paths ?? [resolved];
+    // routingTable() builds fresh Connected entries on each call, so compare by value, not identity.
+    const same = (r: typeof best) => r.destination === best.destination && r.kind === best.kind && r.nextHop === best.nextHop && r.interfaceId === best.interfaceId && r.preference === best.preference;
     return [`Routing entry for ${best.destination}`, `  Known via "${best.kind}", distance ${best.preference}, metric ${best.metric}`, '  Routing Descriptor Blocks:',
       ...blocks.map((b, i) => `  ${i === 0 ? '*' : ' '} ${b.route.nextHop ? `${b.nextHop}, via ${b.iface.id}` : `directly connected, via ${b.iface.id}`}`),
       ...(blocks.length > 1 ? [`  （ECMP: 等コストのNext Hopが${blocks.length}本。どれを使うかはパケットのフロー（送信元/宛先IP・プロトコル・ポート）のハッシュで決まります。show ip cef exact-route <送信元> <宛先> で確かめられます）`] : []),
-      '', `最長一致の候補（${filter} を含む経路）:`, ...candidates.map(r => `  ${r === best ? '→' : ' '} ${pad(r.destination, 18)} /${cidr(r.destination).prefix}  ${r.kind} [${r.preference}/${r.metric}] ${r.nextHop ? `via ${r.nextHop}` : r.interfaceId}`)].join('\n');
+      '', `最長一致の候補（${filter} を含む経路）:`, ...candidates.map(r => `  ${same(r) ? '→' : ' '} ${pad(r.destination, 18)} /${cidr(r.destination).prefix}  ${r.kind} [${r.preference}/${r.metric}] ${r.nextHop ? `via ${r.nextHop}` : r.interfaceId}`)].join('\n');
   }
   if (filter && !['static', 'connected', 'ospf', 'bgp'].includes(filter)) throw new Error(`show ip route [<IP>|static|connected|ospf|bgp]（${filter} は指定できません）`);
   const all = installedRoutes(d);

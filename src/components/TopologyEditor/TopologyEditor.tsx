@@ -154,7 +154,7 @@ function Editor({ compact = false }: { compact?: boolean }) {
       label: !link.up ? 'Link Down' : compact ? '' : hot && event?.vlan !== undefined ? `VLAN ${event.vlan}` : lagLabel ?? speed(link.bandwidth), type: 'smoothstep',
       animated: link.up && hot, selected: link.id === selectedLink,
       style: { stroke: !link.up ? '#c56c61' : hot ? '#199a7b' : link.id === selectedLink ? '#476f9e' : m ? (m.bundled ? '#5b7fc7' : '#d08a3c') : '#94b4aa', strokeWidth: hot || link.id === selectedLink || m?.bundled ? 3 : 2, strokeDasharray: !link.up || (m && !m.bundled) ? '5 5' : undefined },
-      labelStyle: { fill: '#415c50', fontSize: 13 }, labelBgStyle: { fill: '#f8faf7' } };
+      labelStyle: { fill: '#415c50', fontSize: 14 }, labelBgStyle: { fill: '#f8faf7' } };
   });
   const connect = useCallback((c: Connection) => {
     if (!c.sourceHandle || !c.targetHandle) return;

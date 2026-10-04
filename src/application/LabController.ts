@@ -7,7 +7,6 @@ import type { DeviceKind, NetworkSnapshot } from '../simulator/core/types';
 import { routingScenario } from '../simulator/scenarios/routing';
 import { useUI } from '../stores/ui';
 import { templates } from './templates';
-import { curriculum } from '../lessons/curriculum';
 import { untitledDesign } from './designs';
 
 const kindPrefix: Record<DeviceKind, string> = { pc: 'PC', server: 'SRV', router: 'R', switch: 'SW', l3switch: 'L3SW', firewall: 'FW', internet: 'ISP' };
@@ -183,11 +182,13 @@ class LabController {
   }
   addDevice(kind: DeviceKind, position?: { x: number; y: number }) {
     const snapshot = this.network.snapshot();
-    const prefix = kindPrefix[kind];
+    // Names count per kind (PC1, PC2, R1 …), lowest free number first, so lesson steps can name them; MACs only need to be unique.
+    let number = 1;
+    while (snapshot.devices.some(d => d.id === `${kindPrefix[kind]}${number}`)) number++;
+    const id = `${kindPrefix[kind]}${number}`;
     let ordinal = snapshot.devices.length + 1;
     const macs = new Set(snapshot.devices.flatMap(d => d.interfaces.map(i => i.mac)));
-    while (snapshot.devices.some(d => d.id === `${prefix}${ordinal}`) || createDevice('x', kind, ordinal).interfaces.some(i => macs.has(i.mac))) ordinal++;
-    const id = `${prefix}${ordinal}`;
+    while (createDevice('x', kind, ordinal).interfaces.some(i => macs.has(i.mac))) ordinal++;
     if (this.mutate(n => n.addDevice(createDevice(id, kind, ordinal, position ?? { x: 80 + snapshot.devices.length * 40, y: 60 })))) useUI.setState({ selectedDevice: id });
   }
   importLab(input: string) {
@@ -212,23 +213,6 @@ class LabController {
     this.observations = { ...this.observations, [label]: value }; useUI.getState().changed();
     if (this.storageReady) try { await db.settings.put({ id: `obs:${this.labId}`, value: JSON.stringify(this.observations) }); } catch { this.storageFailure(); }
   }
-  /**
-   * Erase learning progress: completed labs and mastery checks, quiz / diagnosis answers and recorded observations.
-   * Saved configurations, AWS / Terraform workspaces and the CLI history are kept. Returns what was removed.
-   */
-  async resetProgress() {
-    const removed = { completed: this.completed.size, quizzes: this.quizzes.size, observations: Object.keys(this.observations).length };
-    this.completed = new Set(); this.quizzes = new Map(); this.observations = {};
-    useUI.getState().changed();
-    if (this.storageReady) try {
-      await db.transaction('rw', db.progress, db.quizzes, db.settings, async () => {
-        await db.progress.clear();
-        await db.quizzes.clear();
-        await db.settings.where('id').startsWith('obs:').delete();
-      });
-    } catch { this.storageFailure(); }
-    return removed;
-  }
   /** Final-state grading on an isolated copy. Troubleshooting labs also require naming the cause. */
   assess() {
     const lab = this.lab;
@@ -241,8 +225,8 @@ class LabController {
 }
 export async function completeLab(id: string) {
   await lab.markComplete(`lab:${id}`);
-  // A chapter is mastered by its designated final-state labs (all of them), not by the quiz.
-  const chapter = curriculum.find(c => c.mastery.type === 'lab' && c.mastery.labIds.includes(id));
-  if (chapter?.mastery.type === 'lab' && chapter.mastery.labIds.every(x => lab.completed.has(`lab:${x}`))) await lab.markComplete(`${chapter.id}-mastery`);
+  // A chapter is complete when its Simulation is built. (The key keeps its old name, so earlier progress still counts.)
+  const def = labById(id);
+  if (def?.kind === 'simulation') await lab.markComplete(`${def.chapter}-mastery`);
 }
 export const lab = new LabController();

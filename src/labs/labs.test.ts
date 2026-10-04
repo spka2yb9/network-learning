@@ -7,13 +7,15 @@ import type { NetworkSimulator } from '../simulator/core/NetworkSimulator';
 import type { AwsModel } from '../aws/model';
 import type { DeviceState } from '../simulator/core/types';
 import { ecmpScenario } from '../simulator/scenarios/chapters';
+import { stepChecks } from './simulation';
+import type { SimStep } from './types';
 
 // Every lab must start unsolved and become solvable by at least one correct solution.
 describe.each(labs.map(l => [l.id, l] as const))('lab %s', (_, lab) => {
   it('has content', () => {
     expect(lab.title.length).toBeGreaterThan(4);
     expect(lab.mission.length).toBeGreaterThan(8);
-    expect(lab.hints.length).toBeGreaterThan(0);
+    if (lab.kind !== 'simulation') expect(lab.hints.length).toBeGreaterThan(0);
     if (lab.diagnosis) expect(lab.diagnosis.answer).toBeLessThan(lab.diagnosis.options.length);
   });
   if (lab.workspace === 'network') {
@@ -57,6 +59,31 @@ describe.each(labs.map(l => [l.id, l] as const))('lab %s', (_, lab) => {
   }
 });
 it('lab ids are unique', () => expect(new Set(labs.map(l => l.id)).size).toBe(labs.length));
+
+// A Simulation is built one step at a time: every step needs an action of its own, and later steps keep earlier ones working.
+describe.each(labs.filter(l => l.kind === 'simulation').map(l => [l.id, l] as const))('simulation %s', (_, lab) => {
+  const steps = (lab.sim ?? []) as SimStep<unknown>[];
+  it('has well-formed steps', () => {
+    expect(steps.length).toBeGreaterThanOrEqual(6);
+    expect(new Set(steps.map(s => s.title)).size).toBe(steps.length);
+    for (const s of steps) {
+      expect(s.body.length, s.title).toBeGreaterThan(40);
+      expect(!!s.check || !!s.quiz, `${s.title}: a step is checked or asks what was observed`).toBe(true);
+      expect(!!s.check, `${s.title}: a checked step has a reference solution`).toBe(!!s.solve);
+      if (s.quiz) expect(s.quiz.answer).toBeLessThan(s.quiz.options.length);
+    }
+  });
+  it('each check fails before its own step and holds from then on', () => {
+    const state = lab.workspace === 'network' ? lab.build() : lab.workspace === 'aws' ? lab.build() : lab.workspace === 'terraform' ? new TerraformWorkspace(lab.build()) : undefined;
+    const now = () => stepChecks(lab, lab.workspace === 'network' ? (state as NetworkSimulator).snapshot() : state as never);
+    steps.forEach((s, i) => {
+      if (s.check) expect(now()[i], `step ${i + 1}「${s.title}」 already holds before its action`).toBe(false);
+      s.solve?.(state);
+      const after = now();
+      steps.slice(0, i + 1).forEach((p, j) => { if (p.check) expect(after[j], `step ${j + 1}「${p.title}」 after step ${i + 1}`).toBe(true); });
+    });
+  });
+});
 
 // Shortcuts that satisfy the probes but break the brief (allow-all, switching the firewall off, …) must not pass.
 describe('graders reject shortcuts', () => {
