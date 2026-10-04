@@ -38,13 +38,8 @@
 
 博士：この章では、最後までこの構成を使う。
 
-```text
-  PC1 ──── CGW ──── INET ──── VGW1 ──┐
-                      │               ├── VPCSW ──── EC2
-                      └────── VGW2 ──┘
-
-  tunnel1:  CGW ════════════ VGW1    （前半で作る1本目の通り道）
-  tunnel2:  CGW ════════════ VGW2    （後半で足す2本目の通り道）
+```theory-diagram
+vpn-physical-network
 ```
 
 | 機器 | 役割 | アドレス |
@@ -77,8 +72,8 @@
 
 博士：そこまでは正しい。だが、INETで捨てられる。
 
-```text
-PC1 → CGW → INET   ✕ 宛先 10.0.1.10 への経路がありません（Network unreachable）
+```theory-diagram
+vpn-missing-route
 ```
 
 ノード：どうしてですか？ 10.0.1.10 は、ちゃんとAWSにいるのに。
@@ -186,16 +181,8 @@ Success rate is 100 percent (5/5)
 
 博士：PC1からEC2へのpingで、包む前と包んだ後を並べてみよう。外側から順に書くぞ。
 
-```text
-包む前（拠点のLAN：PC1 → CGW）
-  ① [IP 192.168.10.10 → 10.0.1.10]
-  ② [ICMP Echo Request]
-
-包んだ後（インターネット：CGW → INET → VGW1）
-  ① [外側IP 198.51.100.2 → 203.0.113.2]   ← CGWが新しく付けたヘッダ
-  ② [トンネルの種類を表すヘッダ]            ← 「中にIPパケットが入っている」という印
-  ③ [IP 192.168.10.10 → 10.0.1.10]         ← 元のパケット（1ビットも変えない）
-  ④ [ICMP Echo Request]
+```theory-diagram
+tunnel-packet-fields
 ```
 
 ノード：元のパケットが、③④にそのまま入っているんですね。
@@ -334,14 +321,8 @@ vpn-envelope
 
 博士：では、ESPのトンネルモードで包んだpingを、外側から順に見てみよう。
 
-```text
-ESPのトンネルモードで包んだ後（インターネット：CGW → INET → VGW1）
-  ① [外側IP 198.51.100.2 → 203.0.113.2  Protocol=ESP (50)]   ← 見える
-  ② [ESPヘッダ  SPI=0x00001102  シーケンス番号=6]            ← 見える
-  ③ [IP 192.168.10.10 → 10.0.1.10]                          ← 暗号化（読めない）
-  ④ [ICMP Echo Request]                                     ← 暗号化（読めない）
-  ⑤ [長さをそろえる詰め物など]                                ← 暗号化（読めない）
-  ⑥ [改ざん検知用の値]
+```theory-diagram
+esp-packet-fields
 ```
 
 ノード：GREのときと比べると、③④が暗号化されて読めなくなっていますね。でも、②のESPヘッダは見えるんですか？
@@ -463,12 +444,8 @@ Encapsulating Security Payload  SPI=0x00001102 Sequence=6
 
 博士：その通り。流れをまとめると、こうなる。
 
-```text
-CGW → VGW1   IKE（UDP 500）  「aes256-sha256 が使えます」
-VGW1 → CGW   IKE             「では aes256-sha256 で」
-CGW ⇔ VGW1   IKE             PSKを使って、互いに本物かを確かめる     → IKE SA ができる
-CGW ⇔ VGW1   IKE             データ用の鍵とSPIを決める              → IPsec SA ができる（行き・帰り）
-CGW ⇔ VGW1   ESP（50）        データを暗号化して運ぶ
+```theory-diagram
+ike-negotiation-steps
 ```
 
 博士：鍵はずっと同じではなく、有効期限が来ると、IKEがあらためて作り直す。長く使うほど解読の手がかりが増えるからだ。
@@ -1032,12 +1009,8 @@ router bgp 64512
 
 ノード：流れで書くと、こうですか？
 
-```text
-1. CGW → VGW1  TCP 179 の接続を作る
-2. CGW ⇔ VGW1  OPEN        「AS 65000 です」「AS 64512 です」
-3. CGW ⇔ VGW1  KEEPALIVE   「了解」                 → Established
-4. CGW ⇔ VGW1  UPDATE      経路を伝え合う（次のページ）
-5. CGW ⇔ VGW1  KEEPALIVE   一定の間隔で「まだいます」
+```theory-diagram
+bgp-session-steps
 ```
 
 博士：その通りだ。電話にたとえるなら、OPENが「もしもし、AS 65000 のCGWです」、KEEPALIVEが相づち、Hold Timeは「相づちが途絶えたら切る」までの時間だ。
@@ -1208,9 +1181,8 @@ C     198.51.100.0/30    is directly connected, g0/1
 
 博士：ここで、BGPでいちばん混乱しやすいことを確認しておこう。
 
-```text
-広告:  CGW  ←── 「10.0.1.0/24 は私へ」 ───  VGW1
-通信:  CGW  ─── 10.0.1.10 宛てのパケット ──→  VGW1
+```theory-diagram
+bgp-advertisement-direction
 ```
 
 ノード：VGW1が広告すると、パケットはVGW1へ向かって流れる。向きが逆なんですね。
@@ -1253,9 +1225,8 @@ bgp-path
 
 博士：VGW1は、10.0.1.0/24 をCGWに広告するとき、自分のASN 64512 を先頭に足す。だからCGWのBGPテーブルの Path は「64512」だった。もし CGW が、この経路をさらに別の支社のルータ（例えば AS 65010）へ広告したら、こうなる。
 
-```text
-VGW1（AS 64512） ──「10.0.1.0/24  AS_PATH: 64512」───────→ CGW（AS 65000）
-CGW（AS 65000）  ──「10.0.1.0/24  AS_PATH: 65000 64512」──→ 支社のルータ（AS 65010）
+```theory-diagram
+bgp-as-path-growth
 ```
 
 ノード：AS_PATHを見れば、経路がどのASを通ってきたかが全部わかるんですね。
@@ -1681,8 +1652,8 @@ CGW# show ip bgp
 
 博士：そこで、前に見た iBGP が効く。tunnel1 の経路が消えると、VGW2のベストパスは tunnel2 経由に変わり、VGW2はそれを iBGP で VGW1 に伝える。VGW1は、その経路（Next Hop 10.0.1.2）を使う。
 
-```text
-EC2 → VGW1 →（iBGPの経路で）→ VGW2 → tunnel2 → CGW → PC1
+```theory-diagram
+vpn-return-failover
 ```
 
 ノード：だから next-hop-self が必要だったんですね！ VGW1から 10.0.1.2 なら、VPCの中で届く。

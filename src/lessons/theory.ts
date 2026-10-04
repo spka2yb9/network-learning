@@ -4,6 +4,7 @@
  * - `> **用語：X**（reading）` + following `>` lines is a term card: it defines X for the hover hints in every chapter;
  * - `> **ポイント**` / `**注意**` / `**現場では**` / `**発展**` / `**まとめ**` / `**シミュレータ**` blockquotes are callouts.
  * - a `theory-visual` code fence containing a visual ID embeds an interactive diagram (components/TheoryVisual/visuals.ts).
+ * - a `theory-diagram` code fence embeds a static packet, flow, network, tree or bit diagram (components/TheoryVisual/diagrams.ts).
  */
 /** Callout blockquotes (`> **ポイント**` …) and their CSS class. */
 export const callouts: Record<string, string> = { ポイント: 'point', 注意: 'caution', 現場では: 'field', 発展: 'advanced', まとめ: 'summary', シミュレータ: 'simulator' };

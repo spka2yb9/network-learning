@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { callouts, termPattern, type Glossary, type Term as TermDef } from '../lessons/theory';
 import { chapterById } from '../lessons/curriculum';
 import TheoryVisual from './TheoryVisual/TheoryVisual';
+import TheoryDiagram from './TheoryVisual/TheoryDiagram';
 
 /** Dialogue lines in the lesson text: a paragraph starting with 「博士：」 or 「ノード：」 becomes a speech bubble. */
 const speakers: Record<string, { name: string; icon: string; side: string }> = {
@@ -51,9 +52,11 @@ export default function Markdown({ children, glossary }: { children: string; glo
     pre: ({ node, ...props }) => {
       const code = node?.children.find(c => c.type === 'element' && c.tagName === 'code') as Hast | undefined;
       const classes = code?.properties?.className;
-      return Array.isArray(classes) && classes.includes('language-theory-visual')
-        ? <TheoryVisual id={text(code!).trim()}/>
-        : <pre {...props}/>;
+      if (Array.isArray(classes)) {
+        if (classes.includes('language-theory-visual')) return <TheoryVisual id={text(code!).trim()}/>;
+        if (classes.includes('language-theory-diagram')) return <TheoryDiagram id={text(code!).trim()}/>;
+      }
+      return <pre {...props}/>;
     },
     table: ({ node: _node, ...props }) => <div className="table-wrap"><table {...props}/></div>,
     // GFM autolinks URLs like http://198.51.100.80/ — those are simulated hosts, so they must not open the real internet.

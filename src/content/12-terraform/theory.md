@@ -46,30 +46,20 @@
 
 博士：この章では、最初から最後まで、次のネットワークを使う。第10章で画面から作ったものとほぼ同じ形だが、今回はすべてファイルに書いて作るのだ。
 
-```text
-東京リージョン（ap-northeast-1）
-VPC  path-vpc  10.0.0.0/16
- ├─ Internet Gateway ─────────────────────────── インターネット
- ├─ パブリックサブネット 10.0.1.0/24（ap-northeast-1a）
- │     └ ルートテーブル public: 0.0.0.0/0 → Internet Gateway
- ├─ セキュリティグループ web-sg（80/tcp を受け付ける）
- └─ プライベートサブネット 10.0.11.0/24（1a）・10.0.12.0/24（1c）
-
-検証用  VPC path-stg-vpc  10.1.0.0/16  ← 同じ形を「部品」から作る
+```theory-diagram
+terraform-target-tree
 ```
 
 ノード：VPCの中に、パブリックサブネットが1つ、プライベートサブネットが2つ。それに、インターネットへの出入口とセキュリティグループですね。
 
 博士：うむ。これを、次のような順で少しずつ書き足していく。
 
-```text
 1. VPCを1つだけ書いて、作る
 2. パブリックサブネット・Internet Gateway・ルートテーブル・セキュリティグループを足す
 3. 設定を変えてみて、「その場で変わる」変更と「作り直し」になる変更を見比べる
 4. 値を変数に出し、プライベートサブネット2つを繰り返しで書く
 5. 画面から手で変えられたときの扱いと、チームでの使い方を知る
 6. 同じ形の検証用VPCを、部品（module）からもう1つ作る
-```
 
 博士：Simulationタブでは、この順番のとおりに、自分の手でファイルを書いて実行してもらう。各ページで出てくる出力は、Simulationで実際に表示されるものと同じ形だ。
 
@@ -161,10 +151,8 @@ VPC  path-vpc  10.0.0.0/16
 
 博士：実は、ノード君が第10章で使ったコンソールも、裏ではこのAPIを呼んでいる。ボタンを押すと、画面がAPIに「VPCを作って」と頼んでいるのだ。Terraformは、その同じAPIに、ファイルの内容をもとに頼むわけだな。
 
-```text
-人がボタンを押す ──→ コンソール ──┐
-                                   ├──→ AWSのAPI ──→ VPCができる
-人がファイルを書く ──→ Terraform ──┘
+```theory-diagram
+terraform-api-path
 ```
 
 ノード：入口が違うだけで、最後に頼む相手は同じなんですね。
@@ -173,12 +161,11 @@ VPC  path-vpc  10.0.0.0/16
 
 博士：さて、Terraformのファイルには、もう1つ大事な性格がある。手順書との違いを比べてみよう。
 
-```text
-手順書（手順を書く）                     Terraformのファイル（完成図を書く）
-1. VPCを作る（10.0.0.0/16）              VPCが1つある。CIDRは 10.0.0.0/16
-2. サブネットを作る（10.0.1.0/24）        サブネットが1つある。CIDRは 10.0.1.0/24
-3. サブネットをVPCに入れる                そのサブネットは、上のVPCの中にある
-```
+| 手順書：手順を書く | Terraform：完成図を書く |
+| --- | --- |
+| VPCを作る（10.0.0.0/16） | VPCが1つある。CIDRは10.0.0.0/16 |
+| サブネットを作る（10.0.1.0/24） | サブネットが1つある。CIDRは10.0.1.0/24 |
+| サブネットをVPCに入れる | サブネットは上のVPCの中にある |
 
 ノード：右側には「作る」って書いてないですね。「ある」って書いてある。
 
@@ -306,13 +293,13 @@ resource "aws_vpc" "main" {
 
 博士：そうだ。画面の入力欄の1つ1つが、引数の1行1行にあたると思えばいい。値の書き方も見ておこう。
 
-```text
-"10.0.0.0/16"            文字列。" " で囲む
-true / false             真偽値（はい／いいえ）
-80                       数値
-["0.0.0.0/0"]            リスト（[ ] の中に値を並べる）
-{ Name = "path-vpc" }    マップ（{ } の中に「キー = 値」を並べる）
-```
+| 値の例 | 型・書き方 |
+| --- | --- |
+| "10.0.0.0/16" | 文字列。" " で囲む |
+| true / false | 真偽値（はい／いいえ） |
+| 80 | 数値 |
+| ["0.0.0.0/0"] | リスト（[ ] の中に値を並べる） |
+| { Name = "path-vpc" } | マップ（{ } の中に「キー = 値」を並べる） |
 
 博士：`tags` は、マップの値を持つ引数だ。キーが `Name`、値が `"path-vpc"`。AWSのコンソールの一覧に表示される名前は、この `Name` タグの値だ。
 
@@ -348,11 +335,11 @@ true / false             真偽値（はい／いいえ）
 
 博士：かまわない。読みやすいように分ければいい。よく使う分け方はこうだ。
 
-```text
-main.tf        terraform / provider ブロックと、主なリソース
-variables.tf   外から受け取る値（第10ページ）
-outputs.tf     外へ見せる値（第10ページ）
-```
+| ファイル | 役割 |
+| --- | --- |
+| main.tf | terraform / provider ブロックと、主なリソース |
+| variables.tf | 外から受け取る値（第10ページ） |
+| outputs.tf | 外へ見せる値（第10ページ） |
 
 > **シミュレータ**
 > このシミュレータでは、プロバイダは `aws` だけが使えます。リソースタイプも `aws_vpc`・`aws_subnet`・`aws_internet_gateway`・`aws_route_table`・`aws_security_group`・`aws_instance` など、ネットワークの学習に使うものに絞っています。
@@ -372,18 +359,8 @@ terraform-cycle
 
 博士：ファイルが書けたら、いよいよTerraformのコマンドを実行する。ただし、いきなり作りはしない。順番はこうだ。
 
-```text
-ファイルを書く
-   ↓
-terraform init       準備する（最初に1回）
-   ↓
-terraform fmt        書式を整える（任意）
-   ↓
-terraform validate   書き間違いがないか確かめる
-   ↓
-terraform plan       何が起きるかの予告を見る    ← この章の主役
-   ↓
-terraform apply      予告を確かめて、実行する      （次のページ）
+```theory-diagram
+terraform-command-order
 ```
 
 ノード：実行するまでに、4つもコマンドがあるんですね。
@@ -501,20 +478,12 @@ Plan: 1 to add, 0 to change, 0 to destroy.
 
 博士：焦るでない。上から順に、4つのかたまりに分けて読めばよい。
 
-```text
-① Resource actions are indicated with the following symbols:
-     + create                       この予告で使う記号の凡例。「+ は作成」
-
-② # aws_vpc.main will be created    どのリソースアドレスに、何が起きるか
-
-③ + resource "aws_vpc" "main" {     そのリソースの中身。行頭の記号が、その行で起きること
-       + cidr_block = "10.0.0.0/16"
-       ...
-     }
-
-④ Plan: 1 to add, 0 to change, 0 to destroy.
-                                    合計。作成1・変更0・削除0
-```
+| 読む順番 | 表示の例 | 意味 |
+| --- | --- | --- |
+| ① 記号の凡例 | `Resource actions are indicated with the following symbols:` / `+ create` | この予告で使う記号。「+ は作成」 |
+| ② リソースの見出し | `# aws_vpc.main will be created` | どのリソースアドレスに、何が起きるか |
+| ③ リソースの中身 | `+ resource "aws_vpc" "main" {` / `+ cidr_block = "10.0.0.0/16"` | 行頭の記号が、その行で起きること |
+| ④ 合計 | `Plan: 1 to add, 0 to change, 0 to destroy.` | 作成1・変更0・削除0 |
 
 ノード：②の `# aws_vpc.main will be created` は、「aws_vpc.main が作られます」ですね。リソースアドレスがここで出てくるんだ。
 
@@ -650,19 +619,14 @@ resource "aws_vpc" "main" {
 
 博士：そうだ。図にするとこうなる。
 
-```text
-ファイル（あるべき姿）        state（Terraformの記録）           AWS（実物）
-resource "aws_vpc" "main"  ←→  aws_vpc.main = vpc-09e3779b1  ←→  vpc-09e3779b1
-  cidr_block = 10.0.0.0/16      cidr_block = 10.0.0.0/16          10.0.0.0/16
+```theory-diagram
+terraform-state-mapping
 ```
 
 博士：plan は、この3つを使って予告を作る。手順はこうだ。
 
-```text
-1. state を読み、「自分が管理している実物」の一覧（IDの一覧）を得る
-2. その実物をAWSに問い合わせて、いまの設定を読み直す
-3. ファイル（あるべき姿）と、読み直した実物を比べる
-4. 差があるところだけを、予告に載せる
+```theory-diagram
+terraform-plan-steps
 ```
 
 ノード：だから、ファイルにVPCが書いてあって、stateにもVPCがあって、実物も同じなら「No changes」なんですね。
@@ -856,11 +820,11 @@ digraph {
 
 博士：完璧だ。ということは、足りないのは3つだな。
 
-```text
-1. Internet Gateway       VPCの出入口
-2. ルートテーブル          0.0.0.0/0 → Internet Gateway の経路を持つ
-3. 関連付け                サブネットに、そのルートテーブルを使わせる
-```
+| 足りないリソース | 役割 |
+| --- | --- |
+| Internet Gateway | VPCの出入口 |
+| ルートテーブル | 0.0.0.0/0 → Internet Gateway の経路を持つ |
+| 関連付け | サブネットに、そのルートテーブルを使わせる |
 
 ### 3つのリソースを書く
 
@@ -899,14 +863,8 @@ resource "aws_route_table_association" "public" {
 
 博士：参照式を矢印にすると、依存グラフはこうなる。
 
-```text
-1段目   aws_vpc.main
-          ├──────────────────┬────────────────────────┐
-2段目   aws_subnet.public    aws_internet_gateway.main  │
-          │                    │                        │
-3段目     │                  aws_route_table.public ←──┘（VPCとIGWを参照）
-          │                    │
-4段目   aws_route_table_association.public（サブネットとルートテーブルを参照）
+```theory-diagram
+terraform-resource-dependencies
 ```
 
 ノード：ルートテーブルは、VPCとIGWの両方を参照してるから、IGWより後の3段目なんですね。関連付けはサブネットとルートテーブルを参照してるから、さらに後の4段目。
@@ -1263,11 +1221,8 @@ terraform-replace-ripple
 
 博士：順番を決めておくといい。
 
-```text
-1. 最後の Plan: の行を見る       destroy が 0 でなければ、何かが消える
-2. -/+ と - の見出しを数える     どのリソースが消える・作り直されるか
-3. # forces replacement を探す   どの引数の変更が、作り直しの原因か
-4. 波及を確かめる                その上で動いているもの（EC2、データ）に何が起きるか
+```theory-diagram
+terraform-plan-review-steps
 ```
 
 ノード：まず `destroy` の数、ですね。0 でなければ、立ち止まる。
@@ -1555,10 +1510,10 @@ public_subnet_id = "subnet-03c6ef362"
 
 博士：次は、例のネットワークにプライベートサブネットを2つ足す。第10章で学んだように、1つのAZが止まっても動き続けられるよう、2つのAZに1つずつ置くのだ。
 
-```text
-プライベートサブネット  10.0.11.0/24  ap-northeast-1a
-プライベートサブネット  10.0.12.0/24  ap-northeast-1c
-```
+| 用途 | CIDR | AZ |
+| --- | --- | --- |
+| プライベートサブネット | 10.0.11.0/24 | ap-northeast-1a |
+| プライベートサブネット | 10.0.12.0/24 | ap-northeast-1c |
 
 ノード：resourceブロックを2つ書けばいいですよね。`aws_subnet.private_a` と `aws_subnet.private_c` で。
 
@@ -1628,11 +1583,10 @@ resource "aws_subnet" "private" {
 
 博士：`count.index` ごとに、値はこう計算される。
 
-```text
-count.index   cidrsubnet の番号    cidr_block      availability_zone   Name
-0             0 + 11 = 11          10.0.11.0/24    ap-northeast-1a     path-private-0
-1             1 + 11 = 12          10.0.12.0/24    ap-northeast-1c     path-private-1
-```
+| count.index | cidrsubnetの番号 | cidr_block | availability_zone | Name |
+| --- | --- | --- | --- | --- |
+| 0 | 0 + 11 = 11 | 10.0.11.0/24 | ap-northeast-1a | path-private-0 |
+| 1 | 1 + 11 = 12 | 10.0.12.0/24 | ap-northeast-1c | path-private-1 |
 
 ノード：`+ 11` にしてあるのは、パブリックの `10.0.1.0/24` とぶつからないように、プライベートを11番から始めるためですね。
 
@@ -1691,15 +1645,11 @@ private_subnet_ids = [ "subnet-0538453d7", "subnet-0f1bbcd88" ]
 
 博士：番号で考えてみたまえ。
 
-```text
-            [0]     [1]     [2]
-変更前      1a      1c      1d
-変更後      1c      1d      （なし）
-
-→ [0] は 1a から 1c に変わる → AZの変更なので作り直し（-/+）
-→ [1] は 1c から 1d に変わる → 作り直し（-/+）
-→ [2] は消える（-）
-```
+| 添字 | 変更前 | 変更後 | 結果 |
+| --- | --- | --- | --- |
+| [0] | 1a | 1c | AZ変更なので作り直し（-/+） |
+| [1] | 1c | 1d | 作り直し（-/+） |
+| [2] | 1d | なし | 削除（-） |
 
 ノード：うわ……。1aだけ消したかったのに、1cと1dまで作り直しに！ 番号で管理してるから、前が抜けると後ろが全部ずれるんだ。
 
@@ -1737,11 +1687,11 @@ terraform-drift
 
 博士：そうだ。いま、3つの場所の中身を並べるとこうなる。
 
-```text
-ファイル（あるべき姿）   web-sg の ingress: 80 だけ
-state（前回の記録）       web-sg の ingress: 80 だけ（前回 apply したときの記録）
-AWS（実物）               web-sg の ingress: 80 と 22   ← 先輩が手で足した
-```
+| 比較するもの | web-sgのingress | 意味 |
+| --- | --- | --- |
+| ファイル | 80だけ | あるべき姿 |
+| state | 80だけ | 前回applyしたときの記録 |
+| AWS | 80と22 | 実物。先輩が手で22を足した |
 
 ノード：実物だけが違ってます。第2ページの「問い2：いまの実物は、手順書と同じか？」の状況だ。
 
@@ -1796,11 +1746,10 @@ Plan: 0 to add, 1 to change, 0 to destroy.
 
 博士：そうだ。drift を見つけたら、2つの道がある。
 
-```text
-道1  手での変更が間違い（消し忘れなど）   → そのまま apply。実物をファイルに戻す
-道2  手での変更が正しい（必要なルール）   → ファイルに ingress を書き足して、
-                                              plan が No changes になることを確かめる
-```
+| 判断 | 対応 |
+| --- | --- |
+| 手での変更が間違い（消し忘れなど） | そのままapplyし、実物をファイルに戻す |
+| 手での変更が正しい（必要なルール） | ファイルにingressを書き足し、planがNo changesになることを確かめる |
 
 博士：今回は、どこからでも22番を開けておくのは危険だから、道1だな。apply すれば `web-sg` は80番だけに戻る。
 
@@ -2060,14 +2009,8 @@ output "vpc_id" {
 
 博士：そうだ。ただし、役割が少し変わる。module の variable は「部品の入口」、output は「部品の出口」になる。
 
-```text
-            ┌──────── modules/network ────────┐
-name ──────→│ variable "name"                  │
-cidr ──────→│ variable "cidr"                  │
-（入口）    │   aws_vpc.this                   │
-            │   aws_subnet.public              │
-            │ output "vpc_id" ────────────────→│──→ vpc_id（出口）
-            └──────────────────────────────────┘
+```theory-diagram
+terraform-module-tree
 ```
 
 ノード：`aws_vpc.this` の `this` は？
@@ -2206,14 +2149,8 @@ module.stg.aws_vpc.this
 
 博士：見事だ。この章で積み上げてきたことを、順に振り返ってみよう。
 
-```text
-ファイルを書く        HCL のブロックと引数。resource "aws_vpc" "main" → アドレス aws_vpc.main
-   ↓
-init                   プロバイダを用意する
-validate               書き方を点検する（AWSには問い合わせない）
-plan                   state・実物・ファイルを比べて、予告を表示する
-   ↓   ← ここで読む: + 作成 / ~ その場で変更 / -/+ 作り直し / - 削除
-apply                  予告を承認して実行。state に「アドレス ↔ ID」を記録する
+```theory-diagram
+terraform-workflow-summary
 ```
 
 ノード：参照式 `aws_vpc.main.id` で、リソースどうしをつなぐと、依存関係が決まって、作る順番もTerraformが決めてくれる。まだないリソースを指していると `(known after apply)`。

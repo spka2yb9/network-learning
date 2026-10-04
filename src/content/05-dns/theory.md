@@ -42,14 +42,8 @@
 
 博士：この章では、最後まで次の構成を使う。左が会社のLAN、右がインターネットの向こう側だ。
 
-```text
-   会社のLAN 192.168.1.0/24                           インターネット側
-                                                    ┌─ ROOT  198.51.100.10
- PC1      192.168.1.10 ─┐                           │
-                        SW1 ── R1 ──── ISP ── SW2 ──┼─ TLD   198.51.100.20
- RESOLVER 192.168.1.53 ─┘                │          │
-                                         │          └─ AUTH  198.51.100.30
-                                         └──────────── WEB   203.0.113.80
+```theory-diagram
+dns-network
 ```
 
 | 機器 | アドレス | ひとことで言うと |
@@ -113,9 +107,8 @@ PC1$ curl http://203.0.113.80/
 
 ノード：じゃあ、`curl http://www.example.com/` と打つと、実際には2段階なんですね。
 
-```text
-① 名前解決:  www.example.com のIPアドレスは？ → 203.0.113.80
-② 通信:      203.0.113.80 にTCPで接続して、ページを取ってくる
+```theory-diagram
+dns-then-connect
 ```
 
 博士：うむ。①が失敗すれば、②は始まりもしない。
@@ -225,14 +218,8 @@ dns-tree
 
 博士：ラベルを右から順にたどると、名前は1本の木になる。描いてみよう。
 
-```text
-                     （根）               ← ルートゾーン。名前は空、書くときは「.」
-             ┌─────────┼─────────┐
-            com        jp        net      ← TLD（いちばん右のラベル）
-         ┌───┴────┐
-      example   （ほかの会社）
-     ┌───┴───┐
-    www     mail                          ← example.com の中の名前
+```theory-diagram
+dns-name-tree
 ```
 
 ノード：木が逆さまですね。根っこが上にある。
@@ -324,10 +311,8 @@ dns-tree
 
 博士：似ているが、同じとは限らない。たとえば `example.com` の持ち主が、開発チームに `dev.example.com` から下を任せた（委任した）としよう。`dev.example.com` は名前としては `example.com` ドメインの一部だが、管理は開発チームに移ったので、`example.com` ゾーンからは外れる。
 
-```text
-example.com ドメイン（名前の範囲）
-├── example.com ゾーン（本社の管理）   example.com, www.example.com, mail.example.com
-└── dev.example.com ゾーン（開発チームの管理）   dev.example.com, api.dev.example.com
+```theory-diagram
+dns-zone-tree
 ```
 
 ノード：ドメインは「名前の範囲」、ゾーンは「管理の範囲」ですね。委任がなければ同じだけど、委任すると切り離される。
@@ -358,10 +343,8 @@ example.com ドメイン（名前の範囲）
 
 博士：実物を読んでみよう。
 
-```text
-www.example.com.   300   IN   A    203.0.113.80
-───────┬────────  ─┬─   ─┬─  ─┬─  ─────┬──────
-       名前        TTL   クラス タイプ    値
+```theory-diagram
+dns-record-fields
 ```
 
 ノード：左から、名前、TTL、クラス、タイプ、値……。名前はFQDNで、末尾にドットがありますね。
@@ -601,15 +584,8 @@ dns-lookup
 
 ### 全体の流れ
 
-```text
-① PC1      → RESOLVER  「www.example.com の A は？」（RD=1：最後まで調べて）
-② RESOLVER → ROOT      同じ質問（RD=0：知っている範囲で）
-③ ROOT     → RESOLVER  「答えは持っていない。com は a.gtld-servers.net（198.51.100.20）へ」
-④ RESOLVER → TLD       同じ質問（RD=0）
-⑤ TLD      → RESOLVER  「example.com は ns1.example.com（198.51.100.30）へ」
-⑥ RESOLVER → AUTH      同じ質問（RD=0）
-⑦ AUTH     → RESOLVER  「www.example.com の A は 203.0.113.80」
-⑧ RESOLVER → PC1       「203.0.113.80」
+```theory-diagram
+dns-resolution-messages
 ```
 
 ノード：PC1が送るのは①だけで、受け取るのは⑧だけなんですね。
@@ -957,11 +933,8 @@ www.example.com.         240    IN  A     203.0.113.80
 
 博士：さて、ここで最初のページの話に戻ろう。WEBを 203.0.113.80 から 203.0.113.90 に引っ越して、AUTHのAレコードを書き換えたとする。
 
-```text
-時刻   0秒  PC1が www を引く → RESOLVERが「203.0.113.80（TTL 300）」をキャッシュ
-時刻 100秒  AUTHで www のAレコードを 203.0.113.90 に変更
-時刻 100〜300秒  RESOLVERは、覚えている 203.0.113.80 を返し続ける（AUTHには聞かない）
-時刻 300秒  キャッシュの期限切れ → 次の問い合わせでAUTHに聞き直し → 203.0.113.90
+```theory-diagram
+dns-cache-timeline
 ```
 
 ノード：あっ！ 100秒から300秒の間、RESOLVERを使う人は、古いIPアドレスにつながっちゃうんですね。
@@ -1069,13 +1042,13 @@ example.com.             3600   IN  SOA   ns1.example.com. hostmaster.example.co
 
 博士：では、「ない」を何秒覚えておくか。ここで、前に「あとで使う」と言ったSOAの最後の数字が出てくる。否定の答えには、そのゾーンのSOAが付いてくる。再帰リゾルバは、次の2つの **小さいほう** の秒数だけ、否定の答えを覚えておく。
 
-```text
-example.com.  3600  IN  SOA  ns1.example.com. hostmaster.example.com. 2026092801 7200 3600 1209600 300
-              ────                                                                                ───
-              ① SOAレコード自身のTTL                                                 ② SOAの最後の数字（minimum）
+| SOAの値 | 秒数 |
+| --- | --- |
+| SOAレコード自身のTTL | 3600 |
+| SOAの最後の数字（minimum） | 300 |
+| 否定の答えを覚えておく時間 | min(3600, 300) = 300 |
 
-否定の答えを覚えておく時間 = ①と②の小さいほう = min(3600, 300) = 300秒
-```
+対象：`example.com. IN SOA ns1.example.com. hostmaster.example.com. 2026092801 7200 3600 1209600 300`
 
 ノード：`example.com` なら300秒、5分ですね。
 
@@ -1085,11 +1058,8 @@ example.com.  3600  IN  SOA  ns1.example.com. hostmaster.example.com. 2026092801
 
 博士：ネガティブキャッシュには、現場でよく踏む落とし穴がある。Simulationでも体験するから、流れを追っておこう。
 
-```text
-① PC1で dig www.example.com    → TLDが NXDOMAIN（com ゾーンに委任がまだない）
-                                → RESOLVERが「www.example.com はない」を900秒キャッシュ
-② TLDの com ゾーンに、example.com の委任（NSとglue）を追加
-③ PC1で dig www.example.com    → まだ NXDOMAIN！
+```theory-diagram
+dns-negative-cache-steps
 ```
 
 ノード：え、③はもう直したあとなのに……。あ、RESOLVERが①の「ない」を覚えているから、TLDにもAUTHにも聞き直さないんですね。
@@ -1281,9 +1251,7 @@ mail.example.com.  3600  IN  A   203.0.113.25
 
 博士：いや、同じDNSの仕組みを使う。IPアドレスを、名前の木の中の **名前** に変えてしまうのだ。
 
-```text
-192.168.1.10  →  10.1.168.192.in-addr.arpa.
-```
+**逆引き名：** `192.168.1.10` → `10.1.168.192.in-addr.arpa.`
 
 ノード：数字が逆の順番になって、後ろに `in-addr.arpa` が付いてます。なんで逆にするんですか？
 
@@ -1430,14 +1398,14 @@ PC1$ dig @192.168.1.99 www.example.com
 
 ### よく使う dig の形
 
-```text
-dig www.example.com                     いつもの問い合わせ（/etc/resolv.conf のサーバーへ）
-dig +short www.example.com              答えの値だけを表示
-dig example.com MX                      タイプを指定（A 以外を聞く）
-dig @198.51.100.30 www.example.com      指定したサーバーに直接聞く（キャッシュを通らない）
-dig +trace www.example.com              ルートサーバーから委任をたどる
-dig -x 192.168.1.10                     逆引き
-```
+| コマンド | 目的 |
+| --- | --- |
+| dig www.example.com | いつもの問い合わせ（/etc/resolv.conf のサーバーへ） |
+| dig +short www.example.com | 答えの値だけを表示 |
+| dig example.com MX | タイプを指定（A 以外を聞く） |
+| dig @198.51.100.30 www.example.com | 指定したサーバーに直接聞く（キャッシュを通らない） |
+| dig +trace www.example.com | ルートサーバーから委任をたどる |
+| dig -x 192.168.1.10 | 逆引き |
 
 ノード：`nslookup` っていうコマンドも聞いたことがあります。
 
@@ -1447,15 +1415,8 @@ dig -x 192.168.1.10                     逆引き
 
 博士：最後に、「名前でつながらない」と言われたときの調べ方を、順番にしておこう。
 
-```text
-1. IPアドレスで届くか？       curl http://203.0.113.80/
-   └ 届かない → DNSより下の問題（経路・ケーブル・フィルタ）。DNSを調べても直らない
-2. 問い合わせ先は正しいか？   cat /etc/resolv.conf（再帰リゾルバを指しているか）
-3. 再帰リゾルバの答えは？     dig www.example.com（status・ANSWER・SERVER）
-4. 権威DNSサーバーの答えは？  dig @198.51.100.30 www.example.com（flags に aa）
-   └ 3と4が違う → キャッシュの問題（TTLかネガティブキャッシュが切れるのを待つ）
-   └ 4がおかしい → ゾーンの設定の問題
-5. 委任はつながっているか？   dig +trace www.example.com（どの段で止まったか）
+```theory-diagram
+dns-troubleshooting-steps
 ```
 
 ノード：3と4を比べるのが効きそうですね。キャッシュのせいか、設定のせいかが分かれる。
@@ -1496,13 +1457,8 @@ dig -x 192.168.1.10                     逆引き
 
 ### 引っ越しの手順
 
-```text
-数日前   TTLを 86400 → 300 に下げる（値はまだ 203.0.113.80 のまま）
-         └ 古い「86400」のキャッシュが、世界中で切れるのを待つ（最低1日）
-当日     Aレコードを 203.0.113.90 に変える
-         └ dig @権威DNSサーバー と dig（再帰リゾルバ経由）の両方で確かめる
-当日〜   旧サーバーは、古い答えのキャッシュが消えるまで止めない（最低300秒、余裕をもって）
-後日     問題がなければ、TTLを元の長さに戻す
+```theory-diagram
+dns-migration-timeline
 ```
 
 ノード：TTLを下げた直後に `dig` すると、どう見えるんですか？
